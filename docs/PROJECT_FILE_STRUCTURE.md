@@ -199,3 +199,61 @@ Company flow and implementation boundary: `docs/architecture/DOJO_WALK_COMPANY_F
 - Inspect the current feature tree and ensure files are placed under the existing architecture rather than creating duplicate model/service layers.
 - Add focused tests for reference-data counts, key uniqueness and parent-child integrity.
 - Run the actual web build and record the result.
+
+
+## 9. Fresh Admin branch — actual paths and migration boundary (24 Oct 2026)
+
+This section is specific to draft PR #37 on branch `feature/admin-fresh-architecture-2026-10-24`. The default `main` branch still has the legacy `lib/screens/**` architecture; do not confuse the draft branch with a merged replacement.
+
+### Paths present in the fresh branch
+
+```text
+lib/
+├── main.dart
+├── app/
+│   └── app.dart
+├── core/
+│   ├── auth/
+│   └── theme/
+└── features/
+    ├── dashboard/
+    │   └── presentation/
+    ├── live_operations/
+    │   └── presentation/
+    └── service_location/
+        ├── data/
+        └── presentation/
+```
+
+The actual fresh UI paths include:
+- `lib/app/app.dart`
+- `lib/core/auth/` — identity, auth repository and auth gate
+- `lib/core/theme/admin_theme.dart`
+- `lib/features/dashboard/presentation/admin_dashboard_screen.dart`
+- `lib/features/live_operations/presentation/live_operations_screen.dart`
+- `lib/features/service_location/data/` — typed location and boundary-review repositories/models
+- `lib/features/service_location/presentation/` — Add Location and Boundary Review
+- `test/core/auth/`, `test/features/dashboard/`, and `test/features/service_location/`
+
+Use the branch's established `presentation/` and `data/` names consistently for new work. Do not create a second parallel `screens/` or `services/` layer inside these same fresh features. If a feature later grows, add a `domain/` layer only when there is a real domain abstraction and tests to justify it.
+
+### Legacy paths — preserve, inventory, then migrate
+
+The default branch contains established paths including `lib/screens/dashboard/**`, `lib/screens/live/**`, `lib/screens/bookings/**`, `lib/services/**`, and existing `lib/features/walkers/**`. PR #37 has intentionally not deleted these paths. Some documentation and older tests refer to them; that alone is not proof that a source file is still imported, and a search excerpt alone is not a complete dependency scan.
+
+Before moving any legacy file, generate a complete inventory from the exact branch and classify each candidate:
+- **KEEP** — still used, or needed for rollback / functionality not yet ported.
+- **MIGRATE** — active functionality with a tested replacement destination.
+- **REMOVE** — proven unreferenced after source, tests, routes, generated files, workflow scripts and documentation-link review.
+
+For every migration, update imports and tests in the same change, run formatter/analyzer/full tests/web build, and compare behavior with the legacy implementation. Do not bulk-move the whole tree or remove legacy booking/walker functions as a visual cleanup.
+
+### Current-head validation evidence
+
+Inspected PR #37 head: `43898dfd74c874e6718e4d040e8932abd8d64801`.
+
+- Service Location Geometry Tests: run `40092368844`, job `geometry-unit-tests` — success.
+- Admin Web Build Check (No Deploy): run `40092368877`, job `build-web` — success.
+- Admin Main Full Validation (No Deploy): run `40092368847`, job `Analyze, test and build Admin Web` — success.
+
+These three CI runs are on the exact head listed above. They validate the repository's configured CI scope only; they do not prove production deployment parity, real Firebase Auth/Firestore Emulator integration, live operational data, map-based boundary review, Founder/CEO approval UI, or complete role/scope enforcement. PR #37 remains draft and unmerged.

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'theme.dart';
-import '../screens/auth/auth_gate.dart';
+import '../core/theme/admin_theme.dart';
+import '../core/auth/fresh_admin_auth_gate.dart';
 
 class DojoWalkAdminApp extends StatelessWidget {
   const DojoWalkAdminApp({super.key});
@@ -11,8 +11,8 @@ class DojoWalkAdminApp extends StatelessWidget {
     return MaterialApp(
       title: 'DOJO WALK Admin',
       debugShowCheckedModeBanner: false,
-      theme: DojoWalkAdminTheme.light(),
-      home: const AuthGate(),
+      theme: AdminTheme.light(),
+      home: const FreshAdminAuthGate(),
     );
   }
 }
