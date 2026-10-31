@@ -286,7 +286,7 @@ class WalkerDetailsSections extends StatelessWidget {
           physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: 4,
           crossAxisSpacing: 16,
-          childAspectRatio: isWide ? 4.8 : 5.0,
+          childAspectRatio: isWide ? 3.6 : 2.8,
           children: children,
         );
       },

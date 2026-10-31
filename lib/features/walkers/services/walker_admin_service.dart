@@ -3,15 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/walker_admin_model.dart';
 import '../utils/walker_admin_helpers.dart';
-
-/// Supported administrative actions for a walker.
-enum WalkerAdminAction {
-  approve,
-  reject,
-  suspend,
-  reactivate,
-  requestCorrection,
-}
+import 'walker_admin_contracts.dart';
+import 'walker_admin_transition_policy.dart';
 
 /// Shared Firestore service for DOJO WALK Admin Walker Management.
 ///
@@ -103,11 +96,11 @@ class WalkerAdminService {
 
   /// Streams audit logs associated with a walker.
   ///
-  /// Sorts the returned documents locally by createdAt.
-  /// This avoids requiring an orderBy index for this query.
+  /// Orders on the server before applying the limit, so the stream
+  /// consistently returns the newest records first.
   ///
-  /// Note: limit applies before local sorting, so this is not
-  /// guaranteed to return the latest records across all history.
+  /// Requires the audit_logs composite index for targetType,
+  /// targetId and createdAt (descending).
   Stream<List<Map<String, dynamic>>> watchWalkerAuditLogs(
     String walkerId, {
     int limit = 50,
@@ -117,6 +110,7 @@ class WalkerAdminService {
     return _auditLogs
         .where('targetType', isEqualTo: 'walker')
         .where('targetId', isEqualTo: walkerId)
+        .orderBy('createdAt', descending: true)
         .limit(safeLimit)
         .snapshots()
         .map((snapshot) {
@@ -170,13 +164,8 @@ class WalkerAdminService {
       );
     }
 
-    final normalizedReason = reason?.trim() ?? '';
-
-    if (_requiresReason(action) && normalizedReason.isEmpty) {
-      throw const WalkerAdminServiceException(
-        'A reason is required for this action.',
-      );
-    }
+    final normalizedReason =
+        WalkerAdminTransitionPolicy.normalizeReason(action, reason);
 
     final walkerRef = _walkers.doc(walkerId);
     final adminRef = _adminUsers.doc(admin.uid);
@@ -234,8 +223,6 @@ class WalkerAdminService {
         isApproved: currentlyApproved,
         isActive: currentlyActive,
         applicationSubmitted: before['applicationSubmitted'] == true,
-        reason: normalizedReason,
-        adminUid: admin.uid,
       );
 
       final timestamp = FieldValue.serverTimestamp();
@@ -251,7 +238,7 @@ class WalkerAdminService {
       final auditRecord = <String, dynamic>{
         'actorUid': admin.uid,
         'actorRole': 'super_admin',
-        'action': _actionName(action),
+        'action': WalkerAdminTransitionPolicy.auditActionName(action),
         'targetType': 'walker',
         'targetId': walkerId,
         'beforeStatus': currentStatus,
@@ -285,135 +272,15 @@ class WalkerAdminService {
     required bool isApproved,
     required bool isActive,
     required bool applicationSubmitted,
-    required String reason,
-    required String adminUid,
   }) {
-    switch (action) {
-      case WalkerAdminAction.approve:
-        if (!applicationSubmitted ||
-            _isTerminalStatus(status) ||
-            verificationStatus == 'rejected' ||
-            status == 'correction_required') {
-          throw const WalkerAdminServiceException(
-            'This application is not eligible for approval.',
-          );
-        }
-
-        return {
-          'status': 'approved',
-          'verificationStatus': 'verified',
-          'isApproved': true,
-          'isActive': true,
-        };
-
-      case WalkerAdminAction.reject:
-        if (!applicationSubmitted ||
-            verificationStatus == 'verified' ||
-            isApproved ||
-            _isTerminalStatus(status)) {
-          throw const WalkerAdminServiceException(
-            'This application is not eligible for rejection.',
-          );
-        }
-
-        return {
-          'status': 'rejected',
-          'verificationStatus': 'rejected',
-          'isApproved': false,
-          'isActive': false,
-        };
-
-      case WalkerAdminAction.suspend:
-        if (status != 'approved' ||
-            verificationStatus != 'verified' ||
-            !isApproved ||
-            !isActive) {
-          throw const WalkerAdminServiceException(
-            'Only an active, approved walker can be suspended.',
-          );
-        }
-
-        return {
-          'status': 'suspended',
-          'verificationStatus': 'verified',
-          'isApproved': true,
-          'isActive': false,
-        };
-
-      case WalkerAdminAction.reactivate:
-        if (status != 'suspended' ||
-            verificationStatus != 'verified' ||
-            !isApproved) {
-          throw const WalkerAdminServiceException(
-            'This walker is not eligible for reactivation.',
-          );
-        }
-
-        return {
-          'status': 'approved',
-          'verificationStatus': 'verified',
-          'isApproved': true,
-          'isActive': true,
-        };
-
-      case WalkerAdminAction.requestCorrection:
-        if (!applicationSubmitted ||
-            _isTerminalStatus(status) ||
-            verificationStatus == 'verified' ||
-            isApproved) {
-          throw const WalkerAdminServiceException(
-            'This application is not eligible for correction.',
-          );
-        }
-
-        return {
-          'status': 'correction_required',
-          'verificationStatus': 'correction_required',
-          'isApproved': false,
-          'isActive': false,
-        };
-    }
+    return WalkerAdminTransitionPolicy.buildChanges(
+      action: action,
+      status: status,
+      verificationStatus: verificationStatus,
+      isApproved: isApproved,
+      isActive: isActive,
+      applicationSubmitted: applicationSubmitted,
+    );
   }
 
-  bool _isTerminalStatus(String status) {
-    return status == 'rejected' ||
-        status == 'suspended' ||
-        status == 'inactive' ||
-        status == 'left';
-  }
-
-  bool _requiresReason(WalkerAdminAction action) {
-    return action == WalkerAdminAction.reject ||
-        action == WalkerAdminAction.suspend ||
-        action == WalkerAdminAction.requestCorrection;
-  }
-
-  String _actionName(WalkerAdminAction action) {
-    switch (action) {
-      case WalkerAdminAction.approve:
-        return 'walker_approved';
-
-      case WalkerAdminAction.reject:
-        return 'walker_rejected';
-
-      case WalkerAdminAction.suspend:
-        return 'walker_suspended';
-
-      case WalkerAdminAction.reactivate:
-        return 'walker_reactivated';
-
-      case WalkerAdminAction.requestCorrection:
-        return 'walker_correction_requested';
-    }
-  }
-}
-
-/// Safe, user-displayable service exception.
-class WalkerAdminServiceException implements Exception {
-  final String message;
-
-  const WalkerAdminServiceException(this.message);
-
-  @override
-  String toString() => message;
 }

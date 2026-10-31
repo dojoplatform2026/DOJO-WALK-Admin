@@ -1,4 +1,4 @@
-name: Admin Main Full Validation (No Deploy)
+name: DOJO WALK Admin — Single CI (Analyze + Tests + Web Build)
 
 on:
   pull_request:
@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - main
+      - ui/notion-brand-foundation-2026-10-28
     paths:
       - '**.dart'
       - 'pubspec.yaml'
@@ -27,14 +28,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: admin-main-validation-${{ github.ref }}
+  group: dojo-admin-single-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   full-validation:
-    name: Analyze, test and build Admin Web
+    name: Analyze, full test suite and Flutter Web build
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,7 +49,10 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze complete Admin project
+      - name: Patch whitespace check
+        run: git diff --check
+
+      - name: Static analysis
         run: flutter analyze
 
       - name: Run complete Admin test suite

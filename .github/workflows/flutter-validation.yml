@@ -1,0 +1,30 @@
+name: DOJO WALK Admin Flutter Validation (Manual Only)
+
+# Automatic validation is centralized in admin-main-full-validation.yml.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Analyze, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Static analysis
+        run: flutter analyze
+      - name: Run Flutter tests
+        run: flutter test
+      - name: Build Flutter Web
+        run: flutter build web --release

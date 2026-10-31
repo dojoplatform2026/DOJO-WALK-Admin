@@ -61,7 +61,11 @@ class WalkerAdminHelpers {
         return 'Inactive';
 
       case 'left':
-        return 'Left';
+      case 'offboarded':
+        return 'Offboarded';
+
+      case 'training_required':
+        return 'Training Required';
 
       case 'pending':
         return 'Pending';
@@ -143,6 +147,8 @@ class WalkerAdminHelpers {
       'suspended',
       'inactive',
       'left',
+      'offboarded',
+      'training_required',
     };
 
     if (excludedStatuses.contains(status)) {
@@ -165,6 +171,21 @@ class WalkerAdminHelpers {
   static bool isRejected(Map<String, dynamic> data) {
     return normalizeStatus(data['status']) == 'rejected' ||
         normalizeStatus(data['verificationStatus']) == 'rejected';
+  }
+
+  /// Identifies walkers who still require training before matching.
+  static bool isTrainingRequired(Map<String, dynamic> data) {
+    return normalizeStatus(data['status']) == 'training_required';
+  }
+
+  /// Identifies approved walkers who are inactive, plus inactive/offboarded
+  /// legacy account states that must not receive new booking offers.
+  static bool isInactiveOrOffboarded(Map<String, dynamic> data) {
+    final status = normalizeStatus(data['status']);
+    return (status == 'approved' && isApproved(data) && !isActive(data)) ||
+        status == 'inactive' ||
+        status == 'left' ||
+        status == 'offboarded';
   }
 
   /// Identifies suspended walker accounts.

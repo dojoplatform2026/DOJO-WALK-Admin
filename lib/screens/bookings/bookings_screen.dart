@@ -1,26 +1,34 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import 'booking_status_helper.dart';
+import 'booking_data_source.dart';
+import '../../utils/admin_error_classifier.dart';
+
 class BookingsScreen extends StatefulWidget {
-  const BookingsScreen({super.key});
+  final BookingsDataSource? dataSource;
+
+  const BookingsScreen({super.key, this.dataSource});
 
   @override
   State<BookingsScreen> createState() => _BookingsScreenState();
 }
 
 class _BookingsScreenState extends State<BookingsScreen> {
+  late final BookingsDataSource _dataSource = widget.dataSource ??
+      FirestoreBookingsDataSource(FirebaseFirestore.instance);
+
   String _selectedStatus = 'All';
   String _search = '';
+  final TextEditingController _searchController = TextEditingController();
 
-  final List<String> _statuses = const [
-    'All',
-    'Pending',
-    'Walker Assigned',
-    'Walker Accepted',
-    'Walk In Progress',
-    'Completed',
-    'Cancelled',
-  ];
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  final List<String> _statuses = bookingFilterStatuses;
 
   String _text(dynamic value, [String fallback = '—']) {
     if (value == null || value.toString().trim().isEmpty) {
@@ -34,11 +42,15 @@ class _BookingsScreenState extends State<BookingsScreen> {
       case 'completed':
         return Colors.green;
       case 'pending':
+      case 'finding walker':
+      case 'walker arriving':
         return Colors.orange;
       case 'cancelled':
         return Colors.red;
+      case 'picked up':
       case 'walk in progress':
         return Colors.blue;
+      case 'confirmed':
       case 'walker accepted':
       case 'walker assigned':
         return Colors.purple;
@@ -60,13 +72,24 @@ class _BookingsScreenState extends State<BookingsScreen> {
 
     if (date == null) return 'Date unavailable';
 
-    final local = date.toLocal();
-    final day = local.day.toString().padLeft(2, '0');
-    final month = local.month.toString().padLeft(2, '0');
+    // Operational timestamps must display in India Standard Time (IST),
+    // independent of the browser/device timezone.
+    final ist = date.toUtc().add(const Duration(hours: 5, minutes: 30));
+    final day = ist.day.toString().padLeft(2, '0');
+    final month = ist.month.toString().padLeft(2, '0');
 
-    return '$day/$month/${local.year} '
-        '${local.hour.toString().padLeft(2, '0')}:'
-        '${local.minute.toString().padLeft(2, '0')}';
+    return '$day/$month/${ist.year} '
+        '${ist.hour.toString().padLeft(2, '0')}:'
+        '${ist.minute.toString().padLeft(2, '0')} IST';
+  }
+
+  int _timestampMillis(dynamic value) {
+    if (value is Timestamp) return value.millisecondsSinceEpoch;
+    if (value is DateTime) return value.millisecondsSinceEpoch;
+    if (value is String) {
+      return DateTime.tryParse(value)?.millisecondsSinceEpoch ?? 0;
+    }
+    return 0;
   }
 
   @override
@@ -95,12 +118,23 @@ class _BookingsScreenState extends State<BookingsScreen> {
                 ),
                 const SizedBox(height: 18),
                 TextField(
+                  controller: _searchController,
                   onChanged: (value) {
                     setState(() => _search = value.trim().toLowerCase());
                   },
                   decoration: InputDecoration(
                     hintText: 'Search booking, customer or status',
                     prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _search.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear search',
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _search = '');
+                            },
+                            icon: const Icon(Icons.close),
+                          ),
                     filled: true,
                     fillColor: Colors.white,
                     border: OutlineInputBorder(
@@ -111,6 +145,7 @@ class _BookingsScreenState extends State<BookingsScreen> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
+                  isExpanded: true,
                   initialValue: _selectedStatus,
                   decoration: InputDecoration(
                     labelText: 'Filter by status',
@@ -123,7 +158,10 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   items: _statuses.map((status) {
                     return DropdownMenuItem(
                       value: status,
-                      child: Text(status),
+                      child: Text(
+                        status,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     );
                   }).toList(),
                   onChanged: (value) {
@@ -136,19 +174,46 @@ class _BookingsScreenState extends State<BookingsScreen> {
             ),
           ),
           Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('bookings')
-                  .snapshots(),
+            child: StreamBuilder<List<BookingRecord>>(
+              stream: _dataSource.watchBookings(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return const Center(
+                  final permissionDenied =
+                      isPermissionDeniedError(snapshot.error);
+                  return Center(
                     child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text(
-                        'Could not load bookings. Check Firestore rules '
-                        'and internet connection.',
-                        textAlign: TextAlign.center,
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            permissionDenied
+                                ? Icons.lock_outline
+                                : Icons.error_outline,
+                            size: 42,
+                            color: permissionDenied
+                                ? Colors.orange
+                                : Colors.redAccent,
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            permissionDenied
+                                ? 'Permission denied'
+                                : 'Could not load bookings',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            permissionDenied
+                                ? 'Your current Admin role or assigned scope may not allow access to these bookings. Ask an authorized administrator to review access.'
+                                : 'Check the connection and data access configuration. No booking status has been changed.',
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -162,11 +227,11 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   );
                 }
 
-                final docs = snapshot.data?.docs ?? [];
+                final docs = snapshot.data ?? const <BookingRecord>[];
 
                 final filtered = docs.where((doc) {
-                  final data = doc.data();
-                  final status = _text(data['status'], 'Unknown');
+                  final data = doc.data;
+                  final status = displayBookingStatus(data['status']);
 
                   if (_selectedStatus != 'All' &&
                       status.toLowerCase() !=
@@ -178,7 +243,13 @@ class _BookingsScreenState extends State<BookingsScreen> {
                     doc.id,
                     _text(data['customerName'], ''),
                     _text(data['customerId'], ''),
-                    _text(data['walkerName'], ''),
+                    _text(data['walkerName'] ?? data['walkerId'], ''),
+                    _text(data['petName'], ''),
+                    _text((data['petDetails'] is Map)
+                        ? (data['petDetails'] as Map)['name']
+                        : null, ''),
+                    _text(data['serviceName'] ?? data['bookingPlan'], ''),
+                    _text(data['preferredTime'], ''),
                     status,
                   ].join(' ').toLowerCase();
 
@@ -186,16 +257,8 @@ class _BookingsScreenState extends State<BookingsScreen> {
                 }).toList();
 
                 filtered.sort((a, b) {
-                  final aDate = a.data()['createdAt'];
-                  final bDate = b.data()['createdAt'];
-
-                  final aTime = aDate is Timestamp
-                      ? aDate.millisecondsSinceEpoch
-                      : 0;
-                  final bTime = bDate is Timestamp
-                      ? bDate.millisecondsSinceEpoch
-                      : 0;
-
+                  final aTime = _timestampMillis(a.data['createdAt']);
+                  final bTime = _timestampMillis(b.data['createdAt']);
                   return bTime.compareTo(aTime);
                 });
 
@@ -213,9 +276,11 @@ class _BookingsScreenState extends State<BookingsScreen> {
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            docs.isEmpty
-                                ? 'No bookings found in Firestore.'
-                                : 'No bookings match your search.',
+                            bookingEmptyStateMessage(
+                              totalRecords: docs.length,
+                              search: _search,
+                              selectedStatus: _selectedStatus,
+                            ),
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               fontSize: 16,
@@ -238,8 +303,8 @@ class _BookingsScreenState extends State<BookingsScreen> {
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
                     final doc = filtered[index];
-                    final data = doc.data();
-                    final status = _text(data['status'], 'Unknown');
+                    final data = doc.data;
+                    final status = displayBookingStatus(data['status']);
                     final color = _statusColor(status);
 
                     final customerName = _text(
@@ -252,6 +317,29 @@ class _BookingsScreenState extends State<BookingsScreen> {
                       'Not assigned',
                     );
 
+                    final petDetails = data['petDetails'] is Map
+                        ? Map<String, dynamic>.from(data['petDetails'] as Map)
+                        : <String, dynamic>{};
+                    final dogName = _text(
+                      data['petName'] ?? petDetails['name'],
+                      'Not provided',
+                    );
+                    final serviceName = _text(
+                      data['serviceName'] ?? data['bookingPlan'],
+                      'Not provided',
+                    );
+                    final preferredTime = _text(data['preferredTime'], '');
+                    final cancelRequest = data['cancelRequest'] is Map
+                        ? Map<String, dynamic>.from(data['cancelRequest'] as Map)
+                        : <String, dynamic>{};
+                    final cancelStatus = _text(
+                      cancelRequest['status'],
+                      data['cancelRequest'] == null ? 'None' : 'Pending',
+                    );
+                    final cancelRequestedBy = _text(
+                      cancelRequest['requestedBy'],
+                      'Unknown',
+                    );
                     final amount = data['amount'] ??
                         data['totalAmount'] ??
                         data['price'];
@@ -316,6 +404,22 @@ class _BookingsScreenState extends State<BookingsScreen> {
                               walkerName,
                             ),
                             _detailRow(
+                              Icons.pets_outlined,
+                              'Dog',
+                              dogName,
+                            ),
+                            _detailRow(
+                              Icons.miscellaneous_services_outlined,
+                              'Service',
+                              serviceName,
+                            ),
+                            if (preferredTime.isNotEmpty)
+                              _detailRow(
+                                Icons.schedule_outlined,
+                                'Preferred time',
+                                preferredTime,
+                              ),
+                            _detailRow(
                               Icons.access_time,
                               'Created',
                               _date(data['createdAt']),
@@ -332,8 +436,15 @@ class _BookingsScreenState extends State<BookingsScreen> {
                             _detailRow(
                               Icons.currency_rupee,
                               'Amount',
-                              amount == null ? '—' : '₹$amount',
+                              amount == null ? 'Not finalized' : '₹$amount',
                             ),
+                            if (data['cancelRequest'] != null)
+                              _detailRow(
+                                Icons.cancel_outlined,
+                                'Cancellation',
+                                '$cancelStatus • $cancelRequestedBy'
+                                    ' • ${cancelRequest['requestedAt'] == null ? 'Time unavailable' : _date(cancelRequest['requestedAt'])}',
+                              ),
                           ],
                         ),
                       ),

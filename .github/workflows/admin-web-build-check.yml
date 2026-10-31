@@ -1,27 +1,9 @@
-name: Admin Web Build Check (No Deploy)
+name: Admin Web Build Check (Manual Only)
 
+# Automatic Analyze + tests + Web build are centralized in
+# admin-main-full-validation.yml to prevent duplicate CI runs.
 on:
-  pull_request:
-    branches:
-      - main
-      - step-186-main-integration-review
-    paths:
-      - '**.dart'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'assets/**'
-      - 'web/**'
-      - '.github/workflows/admin-web-build-check.yml'
-  push:
-    branches:
-      - step-119-boundary-geometry
-    paths:
-      - '**.dart'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'assets/**'
-      - 'web/**'
-      - '.github/workflows/admin-web-build-check.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,21 +14,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-
       - name: Install dependencies
         run: flutter pub get
-
       - name: Analyze complete Admin project
         run: flutter analyze
-
       - name: Run complete Admin test suite
         run: flutter test
-
       - name: Build Flutter Web (no deployment)
         run: flutter build web --release

@@ -18,7 +18,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-import '../services/service_location_geometry.dart';
+import '../services/service_boundary_preview_validator.dart';
+
+typedef ServiceBoundaryMapBuilder = Widget Function({
+  required Set<Marker> markers,
+  required Set<Polygon> polygons,
+  required ValueChanged<LatLng> onTap,
+});
 
 class ServiceBoundaryEditor extends StatefulWidget {
   const ServiceBoundaryEditor({
@@ -27,8 +33,10 @@ class ServiceBoundaryEditor extends StatefulWidget {
     this.initialCenter = const LatLng(28.4744, 77.5040),
     this.initialZoom = 12,
     this.onBoundaryChanged,
+    this.onValidationFeedbackChanged,
     this.onSaveRequested,
     this.readOnly = false,
+    this.mapBuilder,
   });
 
   /// Previously saved polygon vertices.
@@ -42,6 +50,9 @@ class ServiceBoundaryEditor extends StatefulWidget {
   /// Called whenever the user adds, removes or clears points.
   final ValueChanged<List<LatLng>>? onBoundaryChanged;
 
+  /// Reports local shape feedback; this is not authoritative GIS verification.
+  final ValueChanged<String>? onValidationFeedbackChanged;
+
   /// Called when the user requests saving the boundary.
   ///
   /// The parent screen is responsible for persistence.
@@ -49,6 +60,10 @@ class ServiceBoundaryEditor extends StatefulWidget {
 
   /// Prevents editing when true.
   final bool readOnly;
+
+  /// Optional map surface adapter, primarily for deterministic widget tests.
+  /// Production screens should leave this unset to use Google Maps.
+  final ServiceBoundaryMapBuilder? mapBuilder;
 
   @override
   State<ServiceBoundaryEditor> createState() =>
@@ -145,6 +160,7 @@ class _ServiceBoundaryEditorState
     widget.onBoundaryChanged?.call(
       List<LatLng>.unmodifiable(_points),
     );
+    widget.onValidationFeedbackChanged?.call(_validationFeedback);
   }
 
   List<GeoPoint> _toGeoPoints() {
@@ -158,32 +174,11 @@ class _ServiceBoundaryEditorState
         .toList(growable: false);
   }
 
-  bool get _hasValidBasicShape {
-    if (_points.length < 3) return false;
+  String get _validationFeedback =>
+      ServiceBoundaryPreviewValidator.feedback(_points);
 
-    final distinctPoints = _points
-        .map(
-          (point) =>
-              '${point.latitude.toStringAsFixed(7)},'
-              '${point.longitude.toStringAsFixed(7)}',
-        )
-        .toSet();
-
-    if (distinctPoints.length < 3 ||
-        !_points.every(
-          (point) =>
-              point.latitude.isFinite &&
-              point.longitude.isFinite &&
-              point.latitude >= -90 &&
-              point.latitude <= 90 &&
-              point.longitude >= -180 &&
-              point.longitude <= 180,
-        )) {
-      return false;
-    }
-
-    return ServiceLocationGeometry.isValidPolygon(_toGeoPoints());
-  }
+  bool get _hasValidBasicShape =>
+      ServiceBoundaryPreviewValidator.isValid(_points);
 
   void _requestSave() {
     if (widget.readOnly) return;
@@ -256,6 +251,8 @@ class _ServiceBoundaryEditorState
 
   @override
   Widget build(BuildContext context) {
+    final mapHeight =
+        (MediaQuery.sizeOf(context).height * 0.42).clamp(260.0, 420.0);
     return Container(
       decoration: BoxDecoration(
         color: _background,
@@ -270,28 +267,33 @@ class _ServiceBoundaryEditorState
         children: [
           _buildToolbar(),
           SizedBox(
-            height: 420,
-            child: GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: widget.initialCenter,
-                zoom: widget.initialZoom,
-              ),
-              onMapCreated: (controller) {
-                _mapController = controller;
-              },
-              onTap: _addPoint,
-              markers: _markers,
-              polygons: _polygons,
-              mapType: MapType.normal,
-              compassEnabled: true,
-              mapToolbarEnabled: false,
-              zoomControlsEnabled: true,
-              myLocationButtonEnabled: false,
-              rotateGesturesEnabled: true,
-              scrollGesturesEnabled: true,
-              zoomGesturesEnabled: true,
-              tiltGesturesEnabled: false,
-            ),
+            height: mapHeight,
+            child: widget.mapBuilder?.call(
+                  markers: _markers,
+                  polygons: _polygons,
+                  onTap: _addPoint,
+                ) ??
+                GoogleMap(
+                  initialCameraPosition: CameraPosition(
+                    target: widget.initialCenter,
+                    zoom: widget.initialZoom,
+                  ),
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                  },
+                  onTap: _addPoint,
+                  markers: _markers,
+                  polygons: _polygons,
+                  mapType: MapType.normal,
+                  compassEnabled: true,
+                  mapToolbarEnabled: false,
+                  zoomControlsEnabled: true,
+                  myLocationButtonEnabled: false,
+                  rotateGesturesEnabled: true,
+                  scrollGesturesEnabled: true,
+                  zoomGesturesEnabled: true,
+                  tiltGesturesEnabled: false,
+                ),
           ),
           _buildFooter(),
         ],
@@ -356,12 +358,17 @@ class _ServiceBoundaryEditorState
           Text(
             widget.readOnly
                 ? 'यह boundary केवल देखने के लिए है।'
-                : _points.length < 3
-                    ? 'कम-से-कम 3 अलग-अलग पॉइंट जोड़ें और एक बंद, बिना काटती रेखाओं वाला क्षेत्र बनाएं।'
-                    : 'Polygon की मूल जाँच पास है। सेव करने से पहले वास्तविक सीमा जाँचें।',
-            style: const TextStyle(fontSize: 13),
+                : 'Local geometry check: $_validationFeedback',
+            style: const TextStyle(fontSize: 13, height: 1.4),
           ),
           if (!widget.readOnly) ...[
+            const SizedBox(height: 4),
+            const Text(
+              'यह केवल local shape check है — GIS verification या service-area approval नहीं।',
+              style: TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+          ],
+          if (!widget.readOnly && widget.onSaveRequested != null) ...[
             const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerRight,

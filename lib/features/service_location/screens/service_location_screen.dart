@@ -1,40 +1,36 @@
-/// DOJO WALK Admin
+/// DOJO WALK Admin — Service Locations UI.
 ///
-/// Service Locations management screen.
+/// State/UT, District and City are hierarchy/reference records only.
+/// Zone is the sole service activation unit under the current Notion rules.
 ///
-/// Boundary lifecycle supported by the current Firestore Rules:
-/// Pending -> Verified
-/// Pending -> Rejected -> Edit and resubmit
-///
-/// Important:
-/// - New boundaries are saved directly as Pending.
-/// - A separate persisted Draft status is not supported by
-///   the current Firestore Rules.
-/// - Verified boundaries are read-only.
-/// - Boundary verification and service activation are separate.
-/// - City and Area activation use ServiceLocationService.
-/// - Locality activation does not require its own polygon.
-/// - Legacy Zones are not modified.
+/// The Zone-specific boundary preview and approval screens are UI prototypes
+/// until their approved data contract is implemented. This screen must not
+/// present legacy City/Area boundaries or status flags as active service Zones.
+/// Existing data services are retained for the hierarchy/import tabs; this
+/// UI-only work does not add or change Firebase lifecycle operations.
 
 import 'dart:convert';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-import '../models/service_location_boundary.dart';
 import '../models/service_location_models.dart';
 import '../services/location_csv_preview_parser.dart';
 import '../services/location_csv_import_fingerprint.dart';
 import '../services/location_csv_import_service.dart';
 import '../services/location_csv_lgd_validator.dart';
-import '../services/service_location_boundary_service.dart';
 import '../services/service_location_service.dart';
-import '../widgets/add_location_dialog.dart';
-import '../widgets/service_boundary_editor.dart';
+import '../utils/boundary_preview_status.dart';
+import 'add_zone_screen.dart';
+import 'audit_history_screen.dart';
+import 'boundary_review_screen.dart';
+import 'zone_directory_screen.dart';
+import 'zone_approval_queue_screen.dart';
+import 'suspended_zones_screen.dart';
+import 'zone_audit_history_screen.dart';
 
 const Color _locationOrange = Color(0xFFFF7900);
 const Color _locationBackground = Color(0xFFFFFAF5);
@@ -54,9 +50,6 @@ class _ServiceLocationScreenState
   final ServiceLocationService _service =
       ServiceLocationService();
 
-  final ServiceLocationBoundaryService _boundaryService =
-      ServiceLocationBoundaryService();
-
   final TextEditingController _searchController =
       TextEditingController();
 
@@ -68,14 +61,14 @@ class _ServiceLocationScreenState
   Set<Polygon> _loadedActiveBoundaryPolygons = <Polygon>{};
   String? _lastFittedPolygonSignature;
 
+  // India-only navigation aligned to the Notion location hierarchy.
+  // Zone workflow screens are being added separately; legacy Area/Locality
+  // management is intentionally not exposed as a primary navigation tab.
   static const List<String> _tabNames = [
-    'Countries',
-    'States',
+    'State / UT',
     'Districts',
     'Cities',
-    'Areas / Sub-districts',
-    'Localities / Villages',
-    'Import History',
+    'Import & Reconciliation',
   ];
 
   @override
@@ -89,6 +82,30 @@ class _ServiceLocationScreenState
     _searchController.dispose();
     _mapController?.dispose();
     super.dispose();
+  }
+
+  void _openLocationAction(String action) {
+    final Widget screen;
+    switch (action) {
+      case 'directory':
+        screen = const ZoneDirectoryScreen();
+      case 'boundary':
+        screen = const BoundaryReviewScreen();
+      case 'approval':
+        screen = const ZoneApprovalQueueScreen();
+      case 'location-audit':
+        screen = const LocationAuditHistoryScreen();
+      case 'zone-audit':
+        screen = const ZoneAuditHistoryScreen();
+      case 'suspended':
+        screen = const SuspendedZonesScreen();
+      default:
+        return;
+    }
+
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => screen),
+    );
   }
 
   void _showMessage(String message) {
@@ -105,11 +122,24 @@ class _ServiceLocationScreenState
   Future<void> _showError(Object error) async {
     if (!mounted) return;
 
+    // Keep raw exception details out of the UI; backend/provider messages can
+    // contain implementation details. Show a useful, non-sensitive next step.
+    final errorText = error.toString().toLowerCase();
+    final isPermissionError = errorText.contains('permission-denied') ||
+        errorText.contains('permission denied') ||
+        errorText.contains('unauthorized');
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Action could not be completed'),
-        content: SelectableText(error.toString()),
+        title: Text(
+          isPermissionError ? 'Access not available' : 'Action could not be completed',
+        ),
+        content: Text(
+          isPermissionError
+              ? 'Your account may not have permission for this action. Check your assigned role or contact Central Admin.'
+              : 'No changes were confirmed. Please try again. If the problem continues, contact Central Admin.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
@@ -202,13 +232,62 @@ class _ServiceLocationScreenState
           ],
         ),
         actions: [
+          if (isMobile)
+            PopupMenuButton<String>(
+              tooltip: 'More location actions',
+              onSelected: _openLocationAction,
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'directory', child: Text('Zone Directory')),
+                PopupMenuItem(value: 'boundary', child: Text('Boundary Review')),
+                PopupMenuItem(value: 'approval', child: Text('Founder Approval Queue')),
+                PopupMenuItem(value: 'suspended', child: Text('Suspended / Deactivated Zones')),
+                PopupMenuItem(value: 'location-audit', child: Text('Location Audit History')),
+                PopupMenuItem(value: 'zone-audit', child: Text('Zone Audit History')),
+              ],
+            ),
+          if (!isMobile) ...[
+            IconButton(
+              tooltip: 'Zone Directory',
+              onPressed: () => _openLocationAction('directory'),
+              icon: const Icon(Icons.list_alt_outlined),
+            ),
+            IconButton(
+              tooltip: 'Boundary Review',
+              onPressed: () => _openLocationAction('boundary'),
+              icon: const Icon(Icons.fact_check_outlined),
+            ),
+            IconButton(
+              tooltip: 'Founder Approval Queue',
+              onPressed: () => _openLocationAction('approval'),
+              icon: const Icon(Icons.verified_user_outlined),
+            ),
+            IconButton(
+              tooltip: 'Location Audit History',
+              onPressed: () => _openLocationAction('location-audit'),
+              icon: const Icon(Icons.history_rounded),
+            ),
+            IconButton(
+              tooltip: 'Zone Audit History',
+              onPressed: () => _openLocationAction('zone-audit'),
+              icon: const Icon(Icons.history_rounded),
+            ),
+            IconButton(
+              tooltip: 'Suspended / Deactivated Zones',
+              onPressed: () => _openLocationAction('suspended'),
+              icon: const Icon(Icons.pause_circle_outline),
+            ),
+          ],
           Padding(
             padding: EdgeInsets.only(right: isMobile ? 8 : 20),
             child: Center(
               child: FilledButton.icon(
-                onPressed: _showAddLocationDialog,
-                icon: const Icon(Icons.add_location_alt_outlined, size: 19),
-                label: Text(isMobile ? 'Add' : 'Add Location'),
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AddZoneScreen(),
+                  ),
+                ),
+                icon: const Icon(Icons.add_rounded, size: 19),
+                label: Text(isMobile ? 'Add Zone' : 'Add Service Zone'),
                 style: FilledButton.styleFrom(
                   backgroundColor: _locationOrange,
                   foregroundColor: Colors.white,
@@ -246,7 +325,7 @@ class _ServiceLocationScreenState
               controller: _searchController,
               onChanged: (value) => setState(() => _search = value.trim()),
               decoration: InputDecoration(
-                hintText: 'Search state, city, area or code',
+                hintText: 'Search state, district, city or zone code',
                 hintStyle: const TextStyle(fontSize: 13, color: Colors.black45),
                 prefixIcon: const Icon(Icons.search_rounded, color: _locationOrange),
                 suffixIcon: _search.isEmpty
@@ -274,6 +353,29 @@ class _ServiceLocationScreenState
             ),
           ),
           _buildTabs(),
+          Container(
+            width: double.infinity,
+            margin: EdgeInsets.fromLTRB(isMobile ? 12 : 20, 4, isMobile ? 12 : 20, 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: _locationOrange.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _locationOrange.withValues(alpha: 0.22)),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline_rounded, size: 18, color: _locationOrange),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Reference hierarchy only: State / UT, District and City do not activate service. Only a verified Zone can be considered for service activation after the approved review workflow.',
+                    style: TextStyle(fontSize: 12, height: 1.35, color: Color(0xFF4A3525)),
+                  ),
+                ),
+              ],
+            ),
+          ),
           const Divider(height: 1, color: Color(0xFFECE5DE)),
           Expanded(
             child: Container(
@@ -363,17 +465,13 @@ class _ServiceLocationScreenState
             spacing: 5,
             runSpacing: 6,
             children: [
-              _hierarchyChip('Country'),
-              _hierarchyArrow(),
-              _hierarchyChip('State'),
+              _hierarchyChip('State / UT'),
               _hierarchyArrow(),
               _hierarchyChip('District'),
               _hierarchyArrow(),
               _hierarchyChip('City'),
               _hierarchyArrow(),
-              _hierarchyChip('Area'),
-              _hierarchyArrow(),
-              _hierarchyChip('Locality (optional)'),
+              _hierarchyChip('Zone'),
             ],
           ),
           const SizedBox(height: 10),
@@ -421,78 +519,10 @@ class _ServiceLocationScreenState
   // ============================================================
 
   Future<Set<Polygon>> _loadActiveBoundaryPolygons() async {
-    final cities = await _service.watchCities().first;
-    final areas = await _service.watchAreas().first;
-    final boundarySnapshot = await FirebaseFirestore.instance
-        .collection('service_location_boundaries')
-        .where('verificationStatus', isEqualTo: 'verified')
-        .get();
-    final boundariesById = {
-      for (final document in boundarySnapshot.docs)
-        document.id: ServiceLocationBoundary.fromMap(
-          document.id,
-          document.data(),
-        ),
-    };
-    final polygons = <Polygon>{};
-
-    for (final city in cities.where((item) => item.isServiceActive)) {
-      final boundaryId = city.verifiedBoundaryId.trim();
-      if (boundaryId.isEmpty) continue;
-
-      final boundary = boundariesById[boundaryId];
-      if (boundary == null ||
-          !boundary.isVerified ||
-          boundary.locationId != city.id ||
-          boundary.locationType.toLowerCase() != 'city' ||
-          boundary.points.length < 3) {
-        continue;
-      }
-
-      polygons.add(
-        Polygon(
-          polygonId: PolygonId('service-city-${city.id}'),
-          points: boundary.points
-              .map((point) => LatLng(point.latitude, point.longitude))
-              .toList(growable: false),
-          strokeColor: _locationOrange,
-          strokeWidth: 2,
-          fillColor: _locationOrange.withValues(alpha: 0.05),
-          consumeTapEvents: true,
-          onTap: () => _showMessage('Active city boundary: ${city.name}'),
-        ),
-      );
-    }
-
-    for (final area in areas.where((item) => item.isServiceActive)) {
-      final boundaryId = area.verifiedBoundaryId.trim();
-      if (boundaryId.isEmpty) continue;
-
-      final boundary = boundariesById[boundaryId];
-      if (boundary == null ||
-          !boundary.isVerified ||
-          boundary.locationId != area.id ||
-          boundary.locationType.toLowerCase() != 'area' ||
-          boundary.points.length < 3) {
-        continue;
-      }
-
-      polygons.add(
-        Polygon(
-          polygonId: PolygonId('service-area-${area.id}'),
-          points: boundary.points
-              .map((point) => LatLng(point.latitude, point.longitude))
-              .toList(growable: false),
-          strokeColor: _locationOrange,
-          strokeWidth: 2,
-          fillColor: _locationOrange.withValues(alpha: 0.18),
-          consumeTapEvents: true,
-          onTap: () => _showMessage('Active service area: ${area.name}'),
-        ),
-      );
-    }
-
-    return polygons;
+    // Do not display legacy City/Area polygons as active service Zones.
+    // The Zone-specific boundary data contract will be connected after the
+    // UI and Notion screen workflow are finalized.
+    return <Polygon>{};
   }
 
   Future<void> _fitMapToActiveBoundaries(Set<Polygon> polygons) async {
@@ -620,9 +650,11 @@ class _ServiceLocationScreenState
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        snapshot.connectionState == ConnectionState.waiting
-                            ? 'Loading active boundaries…'
-                            : 'Active boundaries: ${polygons.length}',
+                        boundaryPreviewStatusLabel(
+                          isLoading: snapshot.connectionState == ConnectionState.waiting,
+                          hasError: snapshot.hasError,
+                          polygonCount: polygons.length,
+                        ),
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ],
@@ -636,7 +668,7 @@ class _ServiceLocationScreenState
                   color: Colors.white.withValues(alpha: 0.95),
                   shape: const CircleBorder(),
                   child: IconButton(
-                    tooltip: 'Refresh active boundaries',
+                    tooltip: 'Refresh boundary preview',
                     onPressed: () {
                       setState(() {
                         _lastFittedPolygonSignature = null;
@@ -660,7 +692,7 @@ class _ServiceLocationScreenState
                       borderRadius: BorderRadius.circular(9),
                     ),
                     child: Text(
-                      'Unable to load active boundaries: ${snapshot.error}',
+                      'Unable to load active boundaries. Check your access or try again later.',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.red.shade700,
@@ -679,8 +711,8 @@ class _ServiceLocationScreenState
                     borderRadius: BorderRadius.circular(9),
                   ),
                   child: const Text(
-                    'Orange outlines show active verified City/Area boundaries. '
-                    'Tap a polygon to identify it; use Manage Boundary to review details.',
+                    'Verified Zone polygons will appear here when the Zone-specific boundary source is connected. '
+                    'State/UT, District and City are hierarchy records, not service activation units.',
                     style: TextStyle(fontSize: 11),
                   ),
                 ),
@@ -740,21 +772,15 @@ class _ServiceLocationScreenState
   Widget _buildSelectedList() {
     switch (_selectedTab) {
       case 0:
-        return _buildCountries();
-      case 1:
         return _buildStates();
-      case 2:
+      case 1:
         return _buildDistricts();
-      case 3:
+      case 2:
         return _buildCities();
-      case 4:
-        return _buildAreas();
-      case 5:
-        return _buildLocalities();
-      case 6:
+      case 3:
         return _buildImports();
       default:
-        return _buildCountries();
+        return _buildStates();
     }
   }
 
@@ -793,142 +819,7 @@ class _ServiceLocationScreenState
   // COUNTRIES
   // ============================================================
 
-  Widget _buildCountries() {
-    return StreamBuilder<List<ServiceCountry>>(
-      stream: _service.watchCountries(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _emptyState(
-            'Unable to load countries:\n${snapshot.error}',
-          );
-        }
-
-        if (!snapshot.hasData) {
-          return _loadingState();
-        }
-
-        final items = snapshot.data!
-            .where(
-              (item) => _matches(
-                '${item.id} ${item.name} ${item.code}',
-              ),
-            )
-            .toList();
-
-        if (items.isEmpty) {
-          final hasSearch = _search.trim().isNotEmpty;
-
-          return Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 440),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 68,
-                      height: 68,
-                      decoration: BoxDecoration(
-                        color: _locationOrange.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(22),
-                      ),
-                      child: Icon(
-                        hasSearch
-                            ? Icons.search_off_rounded
-                            : Icons.public_rounded,
-                        size: 34,
-                        color: _locationOrange,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      hasSearch ? 'No matching countries' : 'Location master is empty',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF292524),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      hasSearch
-                          ? 'Try another country name or code, or clear the search.'
-                          : 'No documents were returned from service_countries. Add the base country first, then add its states and districts. This screen does not create fake location data automatically.',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        height: 1.5,
-                        color: Colors.black54,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        if (hasSearch)
-                          OutlinedButton.icon(
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _search = '');
-                            },
-                            icon: const Icon(Icons.clear_rounded),
-                            label: const Text('Clear search'),
-                          ),
-                        FilledButton.icon(
-                          onPressed: _showAddLocationDialog,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: _locationOrange,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 13,
-                            ),
-                          ),
-                          icon: const Icon(Icons.add_location_alt_outlined),
-                          label: const Text('Add Country'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          itemCount: items.length,
-          itemBuilder: (context, index) {
-            final item = items[index];
-
-            return _locationCard(
-              title: item.name,
-              subtitle:
-                  'ID: ${item.id} · Code: ${item.code}',
-              active: item.isActive,
-              icon: Icons.public,
-              onToggle: (value) async {
-                try {
-                  await _service.setCountryStatus(
-                    countryId: item.id,
-                    isActive: value,
-                  );
-                } catch (error) {
-                  await _showError(error);
-                }
-              },
-            );
-          },
-        );
-      },
-    );
-  }
-
+  
   // ============================================================
   // STATES
   // ============================================================
@@ -938,7 +829,7 @@ class _ServiceLocationScreenState
       stream: _service.watchCountries(),
       builder: (context, countrySnapshot) {
         if (countrySnapshot.hasError) {
-          return _emptyState('${countrySnapshot.error}');
+          return _emptyState('Unable to load location data. Check your access or try again later.');
         }
 
         if (!countrySnapshot.hasData) {
@@ -960,8 +851,40 @@ class _ServiceLocationScreenState
                   countryId: country.id,
                 ),
                 builder: (context, snapshot) {
-                  if (snapshot.hasError || !snapshot.hasData) {
-                    return const SizedBox.shrink();
+                  if (snapshot.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Text(
+                        'Unable to load states for ${country.name}. Check your access or try again later.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    );
+                  }
+
+                  if (!snapshot.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _locationOrange,
+                            ),
+                          ),
+                          SizedBox(width: 10),
+                          Text('Loading states…'),
+                        ],
+                      ),
+                    );
                   }
 
                   final items = snapshot.data!
@@ -974,7 +897,19 @@ class _ServiceLocationScreenState
                       .toList();
 
                   if (items.isEmpty) {
-                    return const SizedBox.shrink();
+                    if (_search.trim().isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: Text(
+                        'No States match your search in ${country.name}.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    );
                   }
 
                   return Column(
@@ -986,18 +921,7 @@ class _ServiceLocationScreenState
                           title: item.name,
                           subtitle:
                               'ID: ${item.id} · Country: ${country.name}',
-                          active: item.isActive,
                           icon: Icons.map_outlined,
-                          onToggle: (value) async {
-                            try {
-                              await _service.setStateStatus(
-                                stateId: item.id,
-                                isActive: value,
-                              );
-                            } catch (error) {
-                              await _showError(error);
-                            }
-                          },
                         ),
                     ],
                   );
@@ -1018,7 +942,7 @@ class _ServiceLocationScreenState
       stream: _service.watchCountries(),
       builder: (context, countrySnapshot) {
         if (countrySnapshot.hasError) {
-          return _emptyState('Unable to load Countries: ${countrySnapshot.error}');
+          return _emptyState('Unable to load location data. Check your access or try again later.');
         }
         if (!countrySnapshot.hasData) return _loadingState();
 
@@ -1026,7 +950,7 @@ class _ServiceLocationScreenState
           stream: _service.watchStates(),
           builder: (context, stateSnapshot) {
             if (stateSnapshot.hasError) {
-              return _emptyState('Unable to load States: ${stateSnapshot.error}');
+              return _emptyState('Unable to load location data. Check your access or try again later.');
             }
             if (!stateSnapshot.hasData) return _loadingState();
 
@@ -1035,7 +959,7 @@ class _ServiceLocationScreenState
               builder: (context, districtSnapshot) {
                 if (districtSnapshot.hasError) {
                   return _emptyState(
-                    'Unable to load Districts: ${districtSnapshot.error}',
+                    'Unable to load location data. Check your access or try again later.',
                   );
                 }
                 if (!districtSnapshot.hasData) return _loadingState();
@@ -1072,25 +996,8 @@ class _ServiceLocationScreenState
                       _locationCard(
                         title: district.name,
                         subtitle: 'State: ${statesById[district.stateId]?.name ?? "Unknown State"}\n'
-                            'Country: ${countriesById[district.countryId]?.name ?? "Unknown Country"}\n'
-                            'Service: ${district.isActive ? "Active" : "Inactive"}',
-                        active: district.isActive,
+                            'Country: ${countriesById[district.countryId]?.name ?? "Unknown Country"}',
                         icon: Icons.map_outlined,
-                        onToggle: (value) async {
-                          try {
-                            await _service.setDistrictStatus(
-                              districtId: district.id,
-                              isActive: value,
-                            );
-                            _showMessage(
-                              value
-                                  ? 'District activated.'
-                                  : 'District deactivated.',
-                            );
-                          } catch (error) {
-                            await _showError(error);
-                          }
-                        },
                       ),
                   ],
                 );
@@ -1111,7 +1018,7 @@ class _ServiceLocationScreenState
       stream: _service.watchCountries(),
       builder: (context, countrySnapshot) {
         if (countrySnapshot.hasError) {
-          return _emptyState('${countrySnapshot.error}');
+          return _emptyState('Unable to load location data. Check your access or try again later.');
         }
         if (!countrySnapshot.hasData) return _loadingState();
 
@@ -1119,7 +1026,7 @@ class _ServiceLocationScreenState
           stream: _service.watchStates(),
           builder: (context, stateSnapshot) {
             if (stateSnapshot.hasError) {
-              return _emptyState('${stateSnapshot.error}');
+              return _emptyState('Unable to load location data. Check your access or try again later.');
             }
             if (!stateSnapshot.hasData) return _loadingState();
 
@@ -1127,7 +1034,7 @@ class _ServiceLocationScreenState
               stream: _service.watchDistricts(),
               builder: (context, districtSnapshot) {
                 if (districtSnapshot.hasError) {
-                  return _emptyState('${districtSnapshot.error}');
+                  return _emptyState('Unable to load location data. Check your access or try again later.');
                 }
                 if (!districtSnapshot.hasData) return _loadingState();
 
@@ -1149,9 +1056,40 @@ class _ServiceLocationScreenState
                             stateId: state.id,
                           ),
                           builder: (context, citySnapshot) {
-                            if (citySnapshot.hasError ||
-                                !citySnapshot.hasData) {
-                              return const SizedBox.shrink();
+                            if (citySnapshot.hasError) {
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 12,
+                                ),
+                                child: Text(
+                                  'Unable to load cities for ${state.name}. Check your access or try again later.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              );
+                            }
+
+                            if (!citySnapshot.hasData) {
+                              return const Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 12,
+                                ),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: _locationOrange,
+                                      ),
+                                    ),
+                                    SizedBox(width: 10),
+                                    Text('Loading cities…'),
+                                  ],
+                                ),
+                              );
                             }
 
                             final cities = citySnapshot.data!.where((item) {
@@ -1165,7 +1103,19 @@ class _ServiceLocationScreenState
                             }).toList();
 
                             if (cities.isEmpty) {
-                              return const SizedBox.shrink();
+                              if (_search.trim().isEmpty) {
+                                return const SizedBox.shrink();
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 8,
+                                ),
+                                child: Text(
+                                  'No Cities match your search under ${state.name}.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              );
                             }
 
                             return Column(
@@ -1177,32 +1127,8 @@ class _ServiceLocationScreenState
                                     title: item.name,
                                     subtitle:
                                         'ID: ${item.id}\n'
-                                        'District: ${districtsById[item.districtId]?.name ?? (item.districtId.isEmpty ? "Not linked (legacy City)" : "Unknown District")}\n'
-                                        'Legacy boundary points: ${item.boundary.length}\n'
-                                        'Legacy verified: ${item.boundaryVerified ? "Yes" : "No"}\n'
-                                        'Service: ${item.isServiceActive ? "Active" : "Inactive"}',
-                                    active: item.isServiceActive,
+                                        'District: ${districtsById[item.districtId]?.name ?? (item.districtId.isEmpty ? "Not linked (legacy City)" : "Unknown District")}',
                                     icon: Icons.location_city,
-                                    onManageBoundary: () => _manageBoundary(
-                                      locationId: item.id,
-                                      locationName: item.name,
-                                      locationType: 'city',
-                                    ),
-                                    onToggle: (value) async {
-                                      try {
-                                        await _service.setCityServiceStatus(
-                                          cityId: item.id,
-                                          isActive: value,
-                                        );
-                                        _showMessage(
-                                          value
-                                              ? 'City service activated.'
-                                              : 'City service deactivated.',
-                                        );
-                                      } catch (error) {
-                                        await _showError(error);
-                                      }
-                                    },
                                   ),
                               ],
                             );
@@ -1222,205 +1148,12 @@ class _ServiceLocationScreenState
   // AREAS / SUB-DISTRICTS
   // ============================================================
 
-  Widget _buildAreas() {
-    return StreamBuilder<List<ServiceCity>>(
-      stream: _service.watchCities(),
-      builder: (context, citySnapshot) {
-        if (citySnapshot.hasError) {
-          return _emptyState('${citySnapshot.error}');
-        }
-
-        if (!citySnapshot.hasData) {
-          return _loadingState();
-        }
-
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          children: [
-            for (final city in citySnapshot.data!)
-              StreamBuilder<List<ServiceArea>>(
-                stream: _service.watchAreas(
-                  cityId: city.id,
-                ),
-                builder: (context, snapshot) {
-                  if (snapshot.hasError || !snapshot.hasData) {
-                    return const SizedBox.shrink();
-                  }
-
-                  final areas = snapshot.data!
-                      .where(
-                        (item) => _matches(
-                          '${item.id} ${item.name} '
-                          '${city.id} ${city.name} ${city.districtId}',
-                        ),
-                      )
-                      .toList();
-
-                  if (areas.isEmpty) {
-                    return const SizedBox.shrink();
-                  }
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _sectionTitle(city.name),
-                      for (final item in areas)
-                        _locationCard(
-                          title: item.name,
-                          subtitle:
-                              'ID: ${item.id}\n'
-                              'City: ${city.name}\n'
-                              '${city.districtId.isEmpty ? "District: Legacy City (not linked)" : "District ID: ${city.districtId}"}\n'
-                              'Legacy boundary points: '
-                              '${item.boundary.length} · '
-                              'Legacy verified: '
-                              '${item.boundaryVerified ? "Yes" : "No"}\n'
-                              'Service: ${item.isServiceActive ? "Active" : "Inactive"}',
-                          active: item.isServiceActive,
-                          icon: Icons.grid_view,
-                          onManageBoundary: () =>
-                              _manageBoundary(
-                            locationId: item.id,
-                            locationName: item.name,
-                            locationType: 'area',
-                          ),
-                          onToggle: (value) async {
-                            try {
-                              await _service.setAreaServiceStatus(
-                                areaId: item.id,
-                                isActive: value,
-                              );
-
-                              _showMessage(
-                                value
-                                    ? 'Area service activated.'
-                                    : 'Area service deactivated.',
-                              );
-                            } catch (error) {
-                              await _showError(error);
-                            }
-                          },
-                        ),
-                    ],
-                  );
-                },
-              ),
-          ],
-        );
-      },
-    );
-  }
-
+  
   // ============================================================
   // LOCALITIES / VILLAGES
   // ============================================================
 
-  Widget _buildLocalities() {
-    return StreamBuilder<List<ServiceCity>>(
-      stream: _service.watchCities(),
-      builder: (context, citySnapshot) {
-        if (citySnapshot.hasError) {
-          return _emptyState('${citySnapshot.error}');
-        }
-
-        if (!citySnapshot.hasData) {
-          return _loadingState();
-        }
-
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          children: [
-            for (final city in citySnapshot.data!)
-              StreamBuilder<List<ServiceArea>>(
-                stream: _service.watchAreas(
-                  cityId: city.id,
-                ),
-                builder: (context, areaSnapshot) {
-                  if (areaSnapshot.hasError ||
-                      !areaSnapshot.hasData) {
-                    return const SizedBox.shrink();
-                  }
-
-                  return Column(
-                    children: [
-                      for (final area in areaSnapshot.data!)
-                        StreamBuilder<List<ServiceLocality>>(
-                          stream: _service.watchLocalities(
-                            cityId: city.id,
-                            areaId: area.id,
-                          ),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError ||
-                                !snapshot.hasData) {
-                              return const SizedBox.shrink();
-                            }
-
-                            final items = snapshot.data!
-                                .where(
-                                  (item) => _matches(
-                                    '${item.id} ${item.name} '
-                                    '${item.pincode} ${item.areaId} '
-                                    '${area.name} ${item.cityId} '
-                                    '${city.name}',
-                                  ),
-                                )
-                                .toList();
-
-                            if (items.isEmpty) {
-                              return const SizedBox.shrink();
-                            }
-
-                            return Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                              children: [
-                                _sectionTitle(
-                                  '${city.name} · ${area.name}',
-                                ),
-                                for (final item in items)
-                                  _locationCard(
-                                    title: item.name,
-                                    subtitle:
-                                        'ID: ${item.id}\n'
-                                        '${city.name} · ${area.name}'
-                                        '${item.pincode.isEmpty ? "" : " · PIN ${item.pincode}"}\n'
-                                        'Legacy boundary: '
-                                        '${item.boundaryVerified ? "Verified" : "Not verified"}\n'
-                                        'Service: ${item.isServiceActive ? "Active" : "Inactive"}',
-                                    active: item.isServiceActive,
-                                    icon: Icons.place_outlined,
-                                    onToggle: (value) async {
-                                      try {
-                                        await _service
-                                            .setLocalityServiceStatus(
-                                          localityId: item.id,
-                                          isActive: value,
-                                        );
-
-                                        _showMessage(
-                                          value
-                                              ? 'Locality service activated.'
-                                              : 'Locality service deactivated.',
-                                        );
-                                      } catch (error) {
-                                        await _showError(error);
-                                      }
-                                    },
-                                  ),
-                              ],
-                            );
-                          },
-                        ),
-                    ],
-                  );
-                },
-              ),
-          ],
-        );
-      },
-    );
-  }
-
+  
   Future<void> _confirmAndRunCsvImport({
     required LocationCsvPreview preview,
     required String fileName,
@@ -2239,7 +1972,7 @@ class _ServiceLocationScreenState
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return _emptyState(
-            'Unable to load import history:\n${snapshot.error}',
+            'Unable to load import history. Check your access or try again later.',
           );
         }
 
@@ -2255,6 +1988,14 @@ class _ServiceLocationScreenState
               ),
             )
             .toList();
+
+        if (items.isEmpty) {
+          return _emptyState(
+            _search.trim().isEmpty
+                ? 'No import history yet. Preview and validate a CSV before starting an authorized import.'
+                : 'No import records match your search.',
+          );
+        }
 
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -2272,7 +2013,7 @@ class _ServiceLocationScreenState
                     ),
                     const SizedBox(height: 6),
                     const Text(
-                      'Preview and validate State, District, City and Area rows before import. '
+                      'Legacy reference-data import only: preview State, District, City and Area rows. This is not the Create Zone flow and does not create or activate a service Zone. '
                       'Import is restricted to active super_admin accounts. New records stay inactive; '
                       'service activation still requires separate boundary verification.',
                     ),
@@ -2345,860 +2086,6 @@ class _ServiceLocationScreenState
     );
   }
 
-  // ============================================================
-  // BOUNDARY MANAGEMENT
-  // ============================================================
-
-  Future<void> _manageBoundary({
-    required String locationId,
-    required String locationName,
-    required String locationType,
-  }) async {
-    try {
-      final boundaries = await _boundaryService
-          .watchForLocation(
-            locationId,
-            locationType: locationType,
-          )
-          .first;
-
-      if (!mounted) return;
-
-      final verified = boundaries
-          .where((boundary) => boundary.isVerified)
-          .toList();
-
-      // When more than one record exists, let the administrator explicitly
-      // choose which boundary to inspect/edit/review instead of silently
-      // selecting the first record by status.
-      final existing = boundaries.length <= 1
-          ? (boundaries.isEmpty ? null : boundaries.single)
-          : await _chooseBoundaryRecord(
-              locationName: locationName,
-              boundaries: boundaries,
-            );
-
-      // A null result means the chooser was cancelled. For a location with
-      // no records, null is the intentional "create first boundary" state.
-      if (boundaries.length > 1 && existing == null) return;
-
-      final initialPoints = existing == null
-          ? <LatLng>[]
-          : existing.points
-              .map(
-                (point) => LatLng(
-                  point.latitude,
-                  point.longitude,
-                ),
-              )
-              .toList();
-
-      await _showBoundaryEditor(
-        locationId: locationId,
-        locationName: locationName,
-        locationType: locationType,
-        existingBoundary: existing,
-        initialPoints: initialPoints,
-        hasVerifiedBoundary: verified.isNotEmpty,
-      );
-    } catch (error) {
-      await _showError(error);
-    }
-  }
-
-  Future<ServiceLocationBoundary?> _chooseBoundaryRecord({
-    required String locationName,
-    required List<ServiceLocationBoundary> boundaries,
-  }) {
-    String statusLabel(BoundaryVerificationStatus status) {
-      switch (status) {
-        case BoundaryVerificationStatus.pending:
-          return 'Pending review';
-        case BoundaryVerificationStatus.verified:
-          return 'Verified · read-only';
-        case BoundaryVerificationStatus.rejected:
-          return 'Rejected · can edit/resubmit';
-        case BoundaryVerificationStatus.notAvailable:
-          return 'Status unavailable';
-      }
-    }
-
-    String dateLabel(DateTime value) {
-      final local = value.toLocal();
-      String two(int n) => n.toString().padLeft(2, '0');
-      return '${local.year}-${two(local.month)}-${two(local.day)} '
-          '${two(local.hour)}:${two(local.minute)}';
-    }
-
-    final ordered = sortBoundariesForChooser(boundaries);
-
-    return showDialog<ServiceLocationBoundary>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Choose Boundary · $locationName'),
-        content: SizedBox(
-          width: 620,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'एक रिकॉर्ड चुनें। Verified रिकॉर्ड read-only है; '
-                  'पुराना Verified रिकॉर्ड हटाया या बदला नहीं जाएगा।',
-                ),
-                const SizedBox(height: 10),
-                for (final boundary in ordered)
-                  Card(
-                    child: ListTile(
-                      leading: Icon(
-                        boundary.isVerified
-                            ? Icons.verified_outlined
-                            : boundary.verificationStatus ==
-                                    BoundaryVerificationStatus.rejected
-                                ? Icons.error_outline
-                                : Icons.map_outlined,
-                      ),
-                      title: Text(statusLabel(boundary.verificationStatus)),
-                      subtitle: Text(
-                        'Updated: ${dateLabel(boundary.updatedAt)}\n'
-                        'Source: ${boundary.sourceName.isEmpty ? "Not specified" : boundary.sourceName}\n'
-                        'ID: ${boundary.id}',
-                      ),
-                      isThreeLine: true,
-                      onTap: () => Navigator.of(dialogContext).pop(boundary),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showBoundaryEditor({
-    required String locationId,
-    required String locationName,
-    required String locationType,
-    required ServiceLocationBoundary? existingBoundary,
-    required List<LatLng> initialPoints,
-    bool hasVerifiedBoundary = false,
-  }) async {
-    final sourceNameController = TextEditingController(
-      text: existingBoundary?.sourceName ?? '',
-    );
-
-    final sourceReferenceController = TextEditingController(
-      text: existingBoundary?.sourceReference ?? '',
-    );
-
-    final notesController = TextEditingController();
-
-    var sourceType = existingBoundary?.sourceType ??
-        BoundarySourceType.manuallyDrawn;
-
-    var currentPoints = List<LatLng>.of(initialPoints);
-    var isSaving = false;
-
-    final isVerified =
-        existingBoundary?.verificationStatus ==
-            BoundaryVerificationStatus.verified;
-
-    final isRejected =
-        existingBoundary?.verificationStatus ==
-            BoundaryVerificationStatus.rejected;
-
-    final isPending =
-        existingBoundary?.verificationStatus ==
-            BoundaryVerificationStatus.pending;
-
-    try {
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              Future<void> saveBoundary(
-                List<GeoPoint> points,
-              ) async {
-                if (isVerified) {
-                  _showMessage(
-                    'Verified Boundary read-only है।',
-                  );
-                  return;
-                }
-
-                if (isSaving) return;
-
-                final sourceName =
-                    sourceNameController.text.trim();
-
-                final sourceReference =
-                    sourceReferenceController.text.trim();
-
-                if (sourceName.isEmpty ||
-                    sourceReference.isEmpty) {
-                  _showMessage(
-                    'Source name और source reference भरें।',
-                  );
-                  return;
-                }
-
-                setDialogState(() => isSaving = true);
-
-                try {
-                  final now = DateTime.now();
-
-                  final boundary = ServiceLocationBoundary(
-                    id: existingBoundary?.id ?? '',
-                    locationId: locationId,
-                    locationType: locationType,
-                    points: List<GeoPoint>.of(points),
-                    sourceType: sourceType,
-                    sourceName: sourceName,
-                    sourceReference: sourceReference,
-                    verificationStatus:
-                        BoundaryVerificationStatus.pending,
-                    verifiedBy: null,
-                    verifiedAt: null,
-                    verificationNotes: null,
-                    createdAt:
-                        existingBoundary?.createdAt ?? now,
-                    updatedAt: now,
-                  );
-
-                  final errors = boundary.validate();
-
-                  if (errors.isNotEmpty) {
-                    throw ArgumentError(errors.join('\n'));
-                  }
-
-                  await _boundaryService.saveDraft(boundary);
-
-                  if (!dialogContext.mounted) return;
-
-                  Navigator.of(dialogContext).pop();
-
-                  _showMessage(
-                    isRejected
-                        ? 'Boundary के बदलाव सेव हो गए और Boundary Pending Review में भेज दी गई।'
-                        : isPending
-                            ? 'Boundary अपडेट हो गई। इसका status Pending Review है।'
-                            : 'Boundary सेव हो गई और Pending Review में भेज दी गई।',
-                  );
-                } catch (error) {
-                  if (dialogContext.mounted) {
-                    setDialogState(() => isSaving = false);
-                  }
-
-                  await _showError(error);
-                }
-              }
-
-              return AlertDialog(
-                title: Text('Manage Boundary · $locationName'),
-                content: SizedBox(
-                  width: 900,
-                  child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment:
-                          CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Location type: $locationType',
-                          style: const TextStyle(
-                            color: Colors.black54,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-
-                        _boundaryStatusBanner(existingBoundary),
-
-                        if (hasVerifiedBoundary && !isVerified) ...[
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: _locationOrange.withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: _locationOrange.withValues(alpha: 0.35),
-                              ),
-                            ),
-                            child: const Text(
-                              'इस location की पुरानी Verified Boundary सुरक्षित है। '
-                              'यह अलग replacement record है। Firebase replacement '
-                              'verify करने से पहले location का inactive होना जरूरी है; '
-                              'यह स्क्रीन service को अपने-आप deactivate नहीं करेगी।',
-                            ),
-                          ),
-                        ],
-
-                        const SizedBox(height: 12),
-
-                        if (isRejected) ...[
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withValues(alpha: 0.07),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: Colors.red.withValues(alpha: 0.25),
-                              ),
-                            ),
-                            child: Text(
-                              'Previous rejection reason:\n'
-                              '${existingBoundary?.verificationNotes?.trim().isNotEmpty == true ? existingBoundary!.verificationNotes : "No rejection reason recorded."}',
-                              style: const TextStyle(
-                                color: Colors.red,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-
-                        if (!isVerified) ...[
-                          DropdownButtonFormField<BoundarySourceType>(
-                            initialValue: sourceType,
-                            decoration: const InputDecoration(
-                              labelText: 'Boundary source type',
-                              border: OutlineInputBorder(),
-                            ),
-                            items: BoundarySourceType.values
-                                .map(
-                                  (type) => DropdownMenuItem(
-                                    value: type,
-                                    child: Text(
-                                      _sourceTypeLabel(type),
-                                    ),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) {
-                              if (value == null) return;
-
-                              setDialogState(() {
-                                sourceType = value;
-                              });
-                            },
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: sourceNameController,
-                            decoration: const InputDecoration(
-                              labelText: 'Source name *',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: sourceReferenceController,
-                            decoration: const InputDecoration(
-                              labelText: 'Source reference *',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Save करने पर Boundary Pending Review में जाएगी।',
-                            style: TextStyle(
-                              color: Colors.black54,
-                              fontSize: 12,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-
-                        ServiceBoundaryEditor(
-                          initialPoints: currentPoints,
-                          initialCenter: _defaultMapCenter,
-                          initialZoom: 12,
-                          readOnly: isVerified,
-                          onBoundaryChanged: (points) {
-                            currentPoints = List<LatLng>.of(points);
-                          },
-                          onSaveRequested: saveBoundary,
-                        ),
-
-                        if (existingBoundary != null) ...[
-                          const SizedBox(height: 16),
-                          _boundaryDetails(existingBoundary),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-                actions: [
-                  if (isRejected &&
-                      existingBoundary != null &&
-                      existingBoundary.id.isNotEmpty)
-                    OutlinedButton.icon(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              try {
-                                final latest =
-                                    await _boundaryService.getById(
-                                  existingBoundary.id,
-                                );
-
-                                if (latest == null) {
-                                  throw StateError(
-                                    'Boundary नहीं मिली।',
-                                  );
-                                }
-
-                                if (latest.verificationStatus !=
-                                    BoundaryVerificationStatus.rejected) {
-                                  throw StateError(
-                                    'Boundary अब Rejected status में नहीं है।',
-                                  );
-                                }
-
-                                if (!dialogContext.mounted) return;
-
-                                final confirmed =
-                                    await _confirmResubmit(
-                                  locationName,
-                                );
-
-                                if (confirmed != true) return;
-
-                                await _boundaryService
-                                    .requestVerification(latest.id);
-
-                                if (!dialogContext.mounted) return;
-
-                                Navigator.of(dialogContext).pop();
-
-                                _showMessage(
-                                  'Boundary Review के लिए भेज दी गई।',
-                                );
-                              } catch (error) {
-                                await _showError(error);
-                              }
-                            },
-                      icon: const Icon(Icons.send_outlined),
-                      label: const Text('Resubmit for Review'),
-                    ),
-
-                  if (isPending && existingBoundary != null)
-                    TextButton.icon(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              try {
-                                final latest =
-                                    await _boundaryService.getById(
-                                  existingBoundary.id,
-                                );
-
-                                if (latest == null ||
-                                    latest.verificationStatus !=
-                                        BoundaryVerificationStatus.pending) {
-                                  throw StateError(
-                                    'केवल Pending Boundary को Reject किया जा सकता है।',
-                                  );
-                                }
-
-                                if (!dialogContext.mounted) return;
-
-                                final reason =
-                                    await _askForReviewNotes(
-                                  approve: false,
-                                );
-
-                                if (reason == null) return;
-
-                                await _boundaryService.rejectBoundary(
-                                  boundaryId: latest.id,
-                                  reason: reason,
-                                );
-
-                                if (!dialogContext.mounted) return;
-
-                                Navigator.of(dialogContext).pop();
-
-                                _showMessage(
-                                  'Boundary Reject कर दी गई।',
-                                );
-                              } catch (error) {
-                                await _showError(error);
-                              }
-                            },
-                      icon: const Icon(
-                        Icons.close,
-                        color: Colors.red,
-                      ),
-                      label: const Text(
-                        'Reject',
-                        style: TextStyle(color: Colors.red),
-                      ),
-                    ),
-
-                  if (isPending && existingBoundary != null)
-                    FilledButton.icon(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              try {
-                                final latest =
-                                    await _boundaryService.getById(
-                                  existingBoundary.id,
-                                );
-
-                                if (latest == null ||
-                                    latest.verificationStatus !=
-                                        BoundaryVerificationStatus.pending) {
-                                  throw StateError(
-                                    'केवल Pending Boundary Verify हो सकती है।',
-                                  );
-                                }
-
-                                final errors = latest.validate();
-
-                                if (errors.isNotEmpty) {
-                                  throw StateError(
-                                    errors.join('\n'),
-                                  );
-                                }
-
-                                if (!dialogContext.mounted) return;
-
-                                final notes =
-                                    await _askForReviewNotes(
-                                  approve: true,
-                                );
-
-                                if (notes == null) return;
-
-                                await _boundaryService.markVerified(
-                                  boundaryId: latest.id,
-                                  verificationNotes: notes,
-                                );
-
-                                if (!dialogContext.mounted) return;
-
-                                Navigator.of(dialogContext).pop();
-
-                                _showMessage(
-                                  'Boundary Verified हो गई। Service activation अलग से होगी।',
-                                );
-                              } catch (error) {
-                                await _showError(error);
-                              }
-                            },
-                      icon: const Icon(Icons.verified_outlined),
-                      label: const Text('Verify'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.green,
-                      ),
-                    ),
-
-                  if (isVerified)
-                    OutlinedButton.icon(
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              Navigator.of(dialogContext).pop();
-                              await Future<void>.delayed(Duration.zero);
-                              if (!mounted) return;
-                              await _showBoundaryEditor(
-                                locationId: locationId,
-                                locationName: locationName,
-                                locationType: locationType,
-                                existingBoundary: null,
-                                initialPoints: const <LatLng>[],
-                              );
-                            },
-                      icon: const Icon(Icons.add_location_alt_outlined),
-                      label: const Text('Create replacement boundary'),
-                    ),
-
-                  TextButton(
-                    onPressed: isSaving
-                        ? null
-                        : () => Navigator.of(dialogContext).pop(),
-                    child: const Text('Close'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-    } finally {
-      sourceNameController.dispose();
-      sourceReferenceController.dispose();
-      notesController.dispose();
-    }
-  }
-
-  Future<bool?> _confirmResubmit(String locationName) {
-    return showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Resubmit Boundary?'),
-        content: Text(
-          '$locationName की Boundary Review में भेजी जाएगी। '
-          'क्या आपने polygon और source details जाँच लिए हैं?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Resubmit'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ============================================================
-  // BOUNDARY STATUS
-  // ============================================================
-
-  Widget _boundaryStatusBanner(
-    ServiceLocationBoundary? boundary,
-  ) {
-    if (boundary == null) {
-      return Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.blue.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Text(
-          'नई Boundary बनाएँ और source details भरें। '
-          'Save करने पर वह Pending Review में जाएगी।',
-        ),
-      );
-    }
-
-    final status = boundary.verificationStatus;
-
-    final Color statusColor;
-    final String statusLabel;
-    final IconData statusIcon;
-
-    switch (status) {
-      case BoundaryVerificationStatus.notAvailable:
-        statusColor = Colors.grey;
-        statusLabel = 'Not available';
-        statusIcon = Icons.help_outline;
-        break;
-
-      case BoundaryVerificationStatus.pending:
-        statusColor = Colors.orange;
-        statusLabel = 'Pending review';
-        statusIcon = Icons.hourglass_top;
-        break;
-
-      case BoundaryVerificationStatus.verified:
-        statusColor = Colors.green;
-        statusLabel = 'Verified';
-        statusIcon = Icons.verified;
-        break;
-
-      case BoundaryVerificationStatus.rejected:
-        statusColor = Colors.red;
-        statusLabel = 'Rejected';
-        statusIcon = Icons.cancel_outlined;
-        break;
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: statusColor.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: statusColor.withValues(alpha: 0.25),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(statusIcon, color: statusColor),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  statusLabel,
-                  style: TextStyle(
-                    color: statusColor,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text('Boundary ID: ${boundary.id}'),
-          Text('Vertices: ${boundary.points.length}'),
-          Text('Source: ${boundary.sourceName}'),
-          if (boundary.verificationNotes != null &&
-              boundary.verificationNotes!.trim().isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text(
-              status == BoundaryVerificationStatus.rejected
-                  ? 'Rejection reason: ${boundary.verificationNotes}'
-                  : 'Review notes: ${boundary.verificationNotes}',
-            ),
-          ],
-          if (boundary.verifiedBy != null)
-            Text('Reviewer UID: ${boundary.verifiedBy}'),
-          if (boundary.verifiedAt != null)
-            Text(
-              'Reviewed: ${boundary.verifiedAt!.toLocal()}',
-            ),
-          if (boundary.isVerified) ...[
-            const SizedBox(height: 8),
-            const Text(
-              'Verified Boundary read-only है।',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _boundaryDetails(
-    ServiceLocationBoundary boundary,
-  ) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Boundary review information',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Source type: ${_sourceTypeLabel(boundary.sourceType)}',
-          ),
-          Text('Source name: ${boundary.sourceName}'),
-          Text('Source reference: ${boundary.sourceReference}'),
-          Text('Status: ${boundary.verificationStatus.name}'),
-          if (boundary.verificationNotes != null &&
-              boundary.verificationNotes!.isNotEmpty)
-            Text('Notes: ${boundary.verificationNotes}'),
-        ],
-      ),
-    );
-  }
-
-  Future<String?> _askForReviewNotes({
-    required bool approve,
-  }) async {
-    final controller = TextEditingController();
-
-    try {
-      return await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text(
-            approve ? 'Verify Boundary' : 'Reject Boundary',
-          ),
-          content: SizedBox(
-            width: 480,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  approve
-                      ? 'Source और polygon जाँचने के बाद verification notes लिखें।'
-                      : 'Boundary Reject करने का स्पष्ट कारण लिखें।',
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  maxLines: 4,
-                  decoration: InputDecoration(
-                    labelText: approve
-                        ? 'Verification notes *'
-                        : 'Rejection reason *',
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: approve ? Colors.green : Colors.red,
-              ),
-              onPressed: () {
-                final notes = controller.text.trim();
-
-                if (notes.isEmpty) {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'कृपया टिप्पणी या कारण लिखें।',
-                      ),
-                    ),
-                  );
-                  return;
-                }
-
-                Navigator.pop(dialogContext, notes);
-              },
-              child: Text(approve ? 'Verify' : 'Reject'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      controller.dispose();
-    }
-  }
-
-  String _sourceTypeLabel(BoundarySourceType type) {
-    switch (type) {
-      case BoundarySourceType.governmentGis:
-        return 'Government GIS';
-      case BoundarySourceType.governmentCadastralMap:
-        return 'Government cadastral map';
-      case BoundarySourceType.importedGeoJson:
-        return 'Imported GeoJSON';
-      case BoundarySourceType.manuallyDrawn:
-        return 'Manually drawn';
-    }
-  }
-
-  // ============================================================
-  // SHARED WIDGETS
-  // ============================================================
-
   Widget _sectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 12, 4, 4),
@@ -3218,10 +2105,7 @@ class _ServiceLocationScreenState
   Widget _locationCard({
     required String title,
     required String subtitle,
-    required bool active,
     required IconData icon,
-    required ValueChanged<bool> onToggle,
-    VoidCallback? onManageBoundary,
   }) {
     return Card(
       color: Colors.white,
@@ -3261,28 +2145,6 @@ class _ServiceLocationScreenState
         ),
         subtitle: Text(subtitle),
         isThreeLine: subtitle.contains('\n'),
-        trailing: SizedBox(
-          width: onManageBoundary == null ? 65 : 190,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (onManageBoundary != null)
-                IconButton(
-                  tooltip: 'Manage Boundary',
-                  onPressed: onManageBoundary,
-                  icon: const Icon(
-                    Icons.edit_location_alt_outlined,
-                    color: _locationOrange,
-                  ),
-                ),
-              Switch(
-                value: active,
-                activeThumbColor: _locationOrange,
-                onChanged: onToggle,
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -3291,19 +2153,4 @@ class _ServiceLocationScreenState
   // ADD LOCATION
   // ============================================================
 
-  Future<void> _showAddLocationDialog() async {
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AddLocationDialog(
-        service: _service,
-        onSaved: (tab) {
-          if (!mounted) return;
-
-          setState(() => _selectedTab = tab);
-          _showMessage('Location saved successfully.');
-        },
-      ),
-    );
   }
-}

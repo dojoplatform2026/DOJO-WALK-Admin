@@ -1,0 +1,152 @@
+name: DOJO WALK Admin Firebase Emulator Integration
+
+# Keep emulator integration manual-only until the Admin UI and its acceptance
+# checklist are complete. This prevents an automatic local-emulator run during
+# the UI-first phase; it does not affect live Firebase or deployment.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: walker-admin-emulator-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  flutterfire-emulator-integration:
+    name: Flutter service against Auth + Firestore emulators
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Admin
+        uses: actions/checkout@v5
+
+      - name: Checkout Firebase Rules
+        uses: actions/checkout@v5
+        with:
+          repository: DOJOWALK/DOJO-WALK-Firebase
+          ref: main
+          path: firebase-rules
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate CI-only Android runner scaffold
+        run: |
+          flutter create --platforms=android --project-name dojo_admin .
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("android/settings.gradle.kts")
+          content = path.read_text()
+          marker = "pluginManagement {"
+          start = content.find(marker)
+          if start < 0:
+              raise SystemExit("pluginManagement block not found in generated Android scaffold")
+          repo_marker = "repositories {"
+          repo_start = content.find(repo_marker, start)
+          if repo_start < 0:
+              raise SystemExit("pluginManagement repositories block not found")
+          insert_at = repo_start + len(repo_marker)
+          prefix = content[insert_at:insert_at + 300]
+          additions = ""
+          if "google()" not in prefix:
+              additions += "\n        google()"
+          if "mavenCentral()" not in prefix:
+              additions += "\n        mavenCentral()"
+          if additions:
+              content = content[:insert_at] + additions + content[insert_at:]
+              path.write_text(content)
+          print("Generated Android plugin repositories include Google and Maven Central.")
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          manifest_content = manifest.read_text()
+          application_tag = "<application"
+          if application_tag not in manifest_content:
+              raise SystemExit("Generated Android application tag not found")
+          if "android:usesCleartextTraffic=" not in manifest_content:
+              manifest_content = manifest_content.replace(
+                  application_tag,
+                  '<application android:usesCleartextTraffic="true"',
+                  1,
+              )
+              manifest.write_text(manifest_content)
+          print("CI-only Android manifest permits HTTP to local Firebase emulators.")
+          # Android's default network security policy blocks cleartext HTTP.
+          # Override it only in this generated CI scaffold for local emulators.
+          xml = Path("android/app/src/main/res/xml")
+          xml.mkdir(parents=True, exist_ok=True)
+          (xml / "network_security_config.xml").write_text("""<?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true" />
+          </network-security-config>
+          """)
+          manifest_content = manifest.read_text()
+          if "android:networkSecurityConfig=" not in manifest_content:
+              manifest_content = manifest_content.replace(
+                  '<application',
+                  '<application android:networkSecurityConfig="@xml/network_security_config"',
+                  1,
+              )
+              manifest.write_text(manifest_content)
+          print("CI-only Android network security permits local emulator HTTP.")
+          PY
+
+      - name: Install Firebase emulator dependencies
+        working-directory: firebase-rules
+        run: npm install --no-audit --no-fund
+
+      - name: Start Auth and Firestore emulators
+        working-directory: firebase-rules
+        run: |
+          npx firebase emulators:start --only auth,firestore --project demo-dojo-admin-integration > "$RUNNER_TEMP/firebase-emulators.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/firebase-emulators.pid"
+          for attempt in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/9099) >/dev/null 2>&1 && (echo > /dev/tcp/127.0.0.1/8080) >/dev/null 2>&1; then
+              echo "Auth and Firestore emulator ports are accepting connections."
+              exit 0
+            fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/firebase-emulators.log"
+          exit 1
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Enable KVM for Android Emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run real FlutterFire service integration test on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            timeout 15m flutter test integration_test/walker_admin_service_emulator_test.dart -d emulator-5554 --dart-define=DOJO_EMULATOR_PROJECT_ID=demo-dojo-admin-integration
+
+      - name: Show emulator logs on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/firebase-emulators.log"

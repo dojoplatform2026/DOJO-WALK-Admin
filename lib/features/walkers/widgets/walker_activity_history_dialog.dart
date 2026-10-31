@@ -49,9 +49,12 @@ class WalkerActivityHistoryDialog extends StatelessWidget {
   }
 
   String _actionLabel(dynamic value) {
-    final action = WalkerAdminHelpers.normalizeStatus(value);
+    var action = WalkerAdminHelpers.normalizeStatus(value);
 
     if (action.isEmpty) return 'Activity';
+    if (action.startsWith('walker_')) {
+      action = action.substring('walker_'.length);
+    }
 
     return WalkerAdminHelpers.displayStatus(action);
   }

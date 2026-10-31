@@ -1,13 +1,24 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/walker_admin_model.dart';
 import '../services/walker_admin_service.dart';
 import '../utils/walker_admin_helpers.dart';
 import '../widgets/walker_admin_widgets.dart';
+import '../../../utils/admin_error_classifier.dart';
 import 'walker_details_screen.dart';
 
 class WalkerManagementDashboardScreen extends StatefulWidget {
-  const WalkerManagementDashboardScreen({super.key});
+  const WalkerManagementDashboardScreen({
+    super.key,
+    this.walkersStream,
+    this.runningWalkerIdsStream,
+  });
+
+  /// Optional read-only streams for deterministic widget tests.
+  /// Production defaults continue to use WalkerAdminService.
+  final Stream<List<WalkerAdminModel>>? walkersStream;
+  final Stream<Set<String>>? runningWalkerIdsStream;
 
   @override
   State<WalkerManagementDashboardScreen> createState() =>
@@ -19,7 +30,40 @@ class _WalkerManagementDashboardScreenState
   final TextEditingController _searchController =
       TextEditingController();
 
-  final WalkerAdminService _service = WalkerAdminService();
+  late final WalkerAdminService _service = WalkerAdminService();
+  late Stream<List<WalkerAdminModel>> _walkersStream;
+  late Stream<Set<String>> _runningWalkerIdsStream;
+  int _streamVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _walkersStream = widget.walkersStream ?? _service.watchWalkers();
+    _runningWalkerIdsStream = widget.runningWalkerIdsStream ??
+        _service.watchBookings().map(_runningWalkerIdsFromSnapshot);
+  }
+
+  Set<String> _runningWalkerIdsFromSnapshot(
+    QuerySnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final ids = <String>{};
+    for (final booking in snapshot.docs) {
+      final data = booking.data();
+      if (!_isRunningBooking(data)) continue;
+      final walkerId = WalkerAdminHelpers.firstString(data, ['walkerId']);
+      if (walkerId != null && walkerId.isNotEmpty) ids.add(walkerId);
+    }
+    return ids;
+  }
+
+  void _retryStreams() {
+    setState(() {
+      _streamVersion++;
+      _walkersStream = widget.walkersStream ?? _service.watchWalkers();
+      _runningWalkerIdsStream = widget.runningWalkerIdsStream ??
+          _service.watchBookings().map(_runningWalkerIdsFromSnapshot);
+    });
+  }
 
   static const Color _orange = Color(0xFFFF7900);
   static const Color _background = Color(0xFFFFFAF5);
@@ -32,7 +76,10 @@ class _WalkerManagementDashboardScreenState
     'Available',
     'Running',
     'Verification',
+    'Training Required',
     'Rejected',
+    'Suspended',
+    'Inactive / Offboarded',
     'All Walkers',
   ];
 
@@ -87,6 +134,8 @@ class _WalkerManagementDashboardScreenState
       walker.area,
       walker.city,
       walker.state,
+      walker.status,
+      walker.verificationStatus,
     ].join(' ').toLowerCase();
 
     return searchable.contains(query);
@@ -156,7 +205,7 @@ class _WalkerManagementDashboardScreenState
         color: _text,
       ),
       decoration: InputDecoration(
-        hintText: 'Search name, phone or Walker ID',
+        hintText: 'Search name, phone, email, ID, location or status',
         hintStyle: const TextStyle(
           fontSize: 12,
           color: _muted,
@@ -197,7 +246,10 @@ class _WalkerManagementDashboardScreenState
     );
   }
 
-  Widget _emptyState() {
+  Widget _emptyState({
+    required String title,
+    required String message,
+  }) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
@@ -209,27 +261,28 @@ class _WalkerManagementDashboardScreenState
         border: Border.all(color: _border),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: const Column(
+      child: Column(
         children: [
-          Icon(
+          const Icon(
             Icons.person_search_outlined,
             size: 40,
             color: _muted,
           ),
-          SizedBox(height: 10),
+          const SizedBox(height: 10),
           Text(
-            'No walkers found',
-            style: TextStyle(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
               color: _text,
               fontSize: 14,
               fontWeight: FontWeight.w800,
             ),
           ),
-          SizedBox(height: 5),
+          const SizedBox(height: 5),
           Text(
-            'Search बदलें या दूसरे tab में देखें।',
+            message,
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
               color: _muted,
               fontSize: 11,
             ),
@@ -239,40 +292,56 @@ class _WalkerManagementDashboardScreenState
     );
   }
 
-  Widget _errorState() {
+  Widget _errorState(Object? error) {
+    final permissionDenied = isPermissionDeniedError(error);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border.all(
-          color: const Color(0xFFFECACA),
+          color: permissionDenied
+              ? const Color(0xFFFFD2AC)
+              : const Color(0xFFFECACA),
         ),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Column(
+      child: Column(
         children: [
           Icon(
-            Icons.error_outline,
-            color: _red,
+            permissionDenied ? Icons.lock_outline : Icons.error_outline,
+            color: permissionDenied ? _orange : _red,
             size: 30,
           ),
-          SizedBox(height: 9),
+          const SizedBox(height: 9),
           Text(
-            'Walker data load नहीं हुआ',
-            style: TextStyle(
+            permissionDenied
+                ? 'Permission denied'
+                : 'Walker data load नहीं हुआ',
+            style: const TextStyle(
               color: _text,
               fontWeight: FontWeight.w800,
             ),
-          ),
-          SizedBox(height: 6),
-          Text(
-            'Connection और Admin permissions जाँचें।',
             textAlign: TextAlign.center,
-            style: TextStyle(
+          ),
+          const SizedBox(height: 6),
+          Text(
+            permissionDenied
+                ? 'Your Admin role or assigned scope may not allow access to this walker or booking data. Ask an authorized administrator to review permissions.'
+                : 'Connection और data access configuration जाँचें। No status has been changed.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
               color: _muted,
               fontSize: 11,
+              height: 1.45,
             ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            key: const ValueKey('walker-management-retry'),
+            onPressed: _retryStreams,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry'),
           ),
         ],
       ),
@@ -284,7 +353,15 @@ class _WalkerManagementDashboardScreenState
     required Set<String> runningWalkerIds,
   }) {
     if (walkers.isEmpty) {
-      return _emptyState();
+      final query = _searchController.text.trim();
+      return _emptyState(
+        title: query.isNotEmpty
+            ? 'No walkers match your search'
+            : 'No walkers in ${_tabs[_selectedTab]}',
+        message: query.isNotEmpty
+            ? 'Try another name, phone, email or Walker ID.'
+            : 'This list is empty for the selected status. Try another tab if you need to review other walkers.',
+      );
     }
 
     return Column(
@@ -308,143 +385,120 @@ class _WalkerManagementDashboardScreenState
   }
 
   Widget _content() {
-    return StreamBuilder<List<WalkerAdminModel>>(
-      stream: _service.watchWalkers(),
-      builder: (context, walkerSnapshot) {
-        if (walkerSnapshot.hasError) {
-          return _errorState();
-        }
+    return KeyedSubtree(
+      key: ValueKey(_streamVersion),
+      child: StreamBuilder<List<WalkerAdminModel>>(
+        stream: _walkersStream,
+        builder: (context, walkerSnapshot) {
+          if (walkerSnapshot.hasError) {
+            return _errorState(walkerSnapshot.error);
+          }
 
-        if (walkerSnapshot.connectionState == ConnectionState.waiting &&
-            !walkerSnapshot.hasData) {
-          return const Center(
-            child: Padding(
-              padding: EdgeInsets.all(30),
-              child: CircularProgressIndicator(color: _orange),
-            ),
-          );
-        }
-
-        final walkers = walkerSnapshot.data ?? <WalkerAdminModel>[];
-
-        return StreamBuilder(
-          stream: _service.watchBookings(),
-          builder: (context, bookingSnapshot) {
-            if (bookingSnapshot.hasError) {
-              return _errorState();
-            }
-
-            if (bookingSnapshot.connectionState ==
-                    ConnectionState.waiting &&
-                !bookingSnapshot.hasData) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: CircularProgressIndicator(color: _orange),
-                ),
-              );
-            }
-
-            final runningWalkerIds = <String>{};
-            final bookings = bookingSnapshot.data?.docs ?? [];
-
-            for (final booking in bookings) {
-              final data = booking.data();
-
-              if (!_isRunningBooking(data)) continue;
-
-              final walkerId = WalkerAdminHelpers.firstString(
-                data,
-                ['walkerId'],
-              );
-
-              if (walkerId != null && walkerId.trim().isNotEmpty) {
-                runningWalkerIds.add(walkerId.trim());
-              }
-            }
-
-            final selectedTab = _tabs[_selectedTab];
-
-            final filteredWalkers = walkers.where((walker) {
-              if (!_matchesSearch(walker)) {
-                return false;
-              }
-
-              switch (selectedTab) {
-                case 'Available':
-                  return walker.isEligibleForAvailability &&
-                      !runningWalkerIds.contains(walker.uid);
-
-                case 'Running':
-                  return runningWalkerIds.contains(walker.uid);
-
-                case 'Verification':
-                  return walker.isUnderReview;
-
-                case 'Rejected':
-                  return walker.isRejected;
-
-                case 'All Walkers':
-                  return true;
-
-                default:
-                  return false;
-              }
-            }).toList();
-
-            filteredWalkers.sort(
-              (a, b) => _name(a)
-                  .toLowerCase()
-                  .compareTo(_name(b).toLowerCase()),
+          if (walkerSnapshot.connectionState == ConnectionState.waiting &&
+              !walkerSnapshot.hasData) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(30),
+                child: CircularProgressIndicator(color: _orange),
+              ),
             );
+          }
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _searchBox(),
-                const SizedBox(height: 14),
-                WalkerAdminTabs(
-                  tabs: _tabs,
-                  selectedIndex: _selectedTab,
-                  onChanged: (index) {
-                    setState(() {
-                      _selectedTab = index;
-                    });
-                  },
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        selectedTab,
-                        style: const TextStyle(
-                          color: _text,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w900,
+          final walkers = walkerSnapshot.data ?? <WalkerAdminModel>[];
+
+          return StreamBuilder<Set<String>>(
+            stream: _runningWalkerIdsStream,
+            builder: (context, runningSnapshot) {
+              if (runningSnapshot.hasError) {
+                return _errorState(runningSnapshot.error);
+              }
+
+              if (runningSnapshot.connectionState == ConnectionState.waiting &&
+                  !runningSnapshot.hasData) {
+                return const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: CircularProgressIndicator(color: _orange),
+                  ),
+                );
+              }
+
+              final runningWalkerIds = runningSnapshot.data ?? <String>{};
+              final selectedTab = _tabs[_selectedTab];
+
+              final filteredWalkers = walkers.where((walker) {
+                if (!_matchesSearch(walker)) return false;
+                switch (selectedTab) {
+                  case 'Available':
+                    return walker.isEligibleForAvailability &&
+                        !runningWalkerIds.contains(walker.uid);
+                  case 'Running':
+                    return runningWalkerIds.contains(walker.uid);
+                  case 'Verification':
+                    return walker.isUnderReview;
+                  case 'Training Required':
+                    return WalkerAdminHelpers.isTrainingRequired(walker.rawData);
+                  case 'Rejected':
+                    return walker.isRejected;
+                  case 'Suspended':
+                    return walker.isSuspended;
+                  case 'Inactive / Offboarded':
+                    return WalkerAdminHelpers.isInactiveOrOffboarded(walker.rawData);
+                  case 'All Walkers':
+                    return true;
+                  default:
+                    return false;
+                }
+              }).toList();
+
+              filteredWalkers.sort((a, b) => _name(a)
+                  .toLowerCase()
+                  .compareTo(_name(b).toLowerCase()));
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _searchBox(),
+                  const SizedBox(height: 14),
+                  WalkerAdminTabs(
+                    tabs: _tabs,
+                    selectedIndex: _selectedTab,
+                    onChanged: (index) => setState(() => _selectedTab = index),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          selectedTab,
+                          style: const TextStyle(
+                            color: _text,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                       ),
-                    ),
-                    Text(
-                      '${filteredWalkers.length} walkers',
-                      style: const TextStyle(
-                        color: _muted,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
+                      Text(
+                        '${filteredWalkers.length} walkers',
+                        style: const TextStyle(
+                          color: _muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _walkerList(
-                  walkers: filteredWalkers,
-                  runningWalkerIds: runningWalkerIds,
-                ),
-              ],
-            );
-          },
-        );
-      },
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _walkerList(
+                    walkers: filteredWalkers,
+                    runningWalkerIds: runningWalkerIds,
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
     );
   }
 

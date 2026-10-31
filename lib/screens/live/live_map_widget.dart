@@ -32,9 +32,11 @@ class LiveMapWidget extends StatelessWidget {
       // Service zone boundaries
       polygons: polygons,
 
-      // Current location (permission required)
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
+      // Admin device location is not required for live walker monitoring.
+      // Keep device-location access disabled to avoid unnecessary permission
+      // prompts and to prevent showing the admin's own location on this map.
+      myLocationEnabled: false,
+      myLocationButtonEnabled: false,
 
       // Map controls
       zoomControlsEnabled: true,

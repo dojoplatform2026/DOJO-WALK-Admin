@@ -1,47 +1,9 @@
-name: Service Location Geometry Tests
+name: Service Location Geometry Tests (Manual Only)
 
+# Geometry tests are included in the single Admin full test suite.
+# Keep this focused workflow available for an explicit manual diagnostic run.
 on:
-  pull_request:
-    paths:
-      - 'lib/features/service_location/services/service_location_geometry.dart'
-      - 'lib/features/service_location/services/service_location_service.dart'
-      - 'lib/features/service_location/services/service_location_boundary_service.dart'
-      - 'lib/features/service_location/services/location_csv_preview_parser.dart'
-      - 'lib/features/service_location/services/location_csv_import_planner.dart'
-      - 'lib/features/service_location/services/location_csv_import_service.dart'
-      - 'test/features/service_location/services/location_csv_import_planner_test.dart'
-      - 'test/features/service_location/services/location_csv_import_failure_test.dart'
-      - 'lib/features/service_location/services/lgd_staging_parser.dart'
-      - 'test/features/service_location/services/lgd_staging_parser_test.dart'
-      - 'test/features/service_location/services/location_csv_preview_parser_test.dart'
-      - 'test/features/service_location/services/service_location_geometry_test.dart'
-      - 'lib/data/reference/india_locations/**'
-      - 'test/reference_data_integrity_test.dart'
-      - '.github/workflows/service-location-geometry-tests.yml'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-  push:
-    branches:
-      - main
-      - step-119-boundary-geometry
-    paths:
-      - 'lib/features/service_location/services/service_location_geometry.dart'
-      - 'lib/features/service_location/services/service_location_service.dart'
-      - 'lib/features/service_location/services/service_location_boundary_service.dart'
-      - 'lib/features/service_location/services/location_csv_preview_parser.dart'
-      - 'lib/features/service_location/services/location_csv_import_planner.dart'
-      - 'lib/features/service_location/services/location_csv_import_service.dart'
-      - 'test/features/service_location/services/location_csv_import_planner_test.dart'
-      - 'test/features/service_location/services/location_csv_import_failure_test.dart'
-      - 'lib/features/service_location/services/lgd_staging_parser.dart'
-      - 'test/features/service_location/services/lgd_staging_parser_test.dart'
-      - 'test/features/service_location/services/location_csv_preview_parser_test.dart'
-      - 'test/features/service_location/services/service_location_geometry_test.dart'
-      - 'lib/data/reference/india_locations/**'
-      - 'test/reference_data_integrity_test.dart'
-      - '.github/workflows/service-location-geometry-tests.yml'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -52,24 +14,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-
       - name: Install dependencies
         run: flutter pub get
-
       - name: Format geometry files
-        run: dart format lib/features/service_location/services/service_location_geometry.dart lib/features/service_location/services/service_location_service.dart lib/features/service_location/services/service_location_boundary_service.dart lib/features/service_location/services/location_csv_preview_parser.dart lib/features/service_location/services/location_csv_import_planner.dart lib/features/service_location/services/location_csv_import_service.dart lib/features/service_location/services/lgd_staging_parser.dart test/features/service_location/services/location_csv_preview_parser_test.dart test/features/service_location/services/location_csv_import_planner_test.dart test/features/service_location/services/location_csv_import_failure_test.dart test/features/service_location/services/lgd_staging_parser_test.dart test/features/service_location/services/service_location_geometry_test.dart lib/data/reference/india_locations/india_states.dart lib/data/reference/india_locations/india_districts.dart lib/data/reference/india_locations/india_sub_districts.dart lib/data/reference/india_locations/india_location_filters.dart test/reference_data_integrity_test.dart
-
+        run: dart format --output=none --set-exit-if-changed lib/features/service_location test/features/service_location test/reference_data_integrity_test.dart
       - name: Check patch whitespace
         run: git diff --check
-
-      - name: Analyze service-location activation and CSV import
-        run: flutter analyze lib/features/service_location/services/service_location_service.dart lib/features/service_location/services/service_location_boundary_service.dart lib/features/service_location/services/location_csv_preview_parser.dart lib/features/service_location/services/location_csv_import_planner.dart lib/features/service_location/services/location_csv_import_service.dart lib/features/service_location/services/lgd_staging_parser.dart lib/data/reference/india_locations/india_states.dart lib/data/reference/india_locations/india_districts.dart lib/data/reference/india_locations/india_sub_districts.dart lib/data/reference/india_locations/india_location_filters.dart
-
-      - name: Run geometry and CSV import planner unit tests
-        run: flutter test test/features/service_location/services/service_location_geometry_test.dart test/features/service_location/services/location_csv_preview_parser_test.dart test/features/service_location/services/location_csv_import_planner_test.dart test/features/service_location/services/location_csv_import_failure_test.dart test/features/service_location/services/lgd_staging_parser_test.dart test/reference_data_integrity_test.dart
+      - name: Analyze service-location code
+        run: flutter analyze lib/features/service_location
+      - name: Run service-location tests
+        run: flutter test test/features/service_location test/reference_data_integrity_test.dart

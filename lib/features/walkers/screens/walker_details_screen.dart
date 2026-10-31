@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/walker_admin_model.dart';
 import '../services/walker_admin_service.dart';
+import '../services/walker_admin_contracts.dart';
 import '../utils/walker_admin_helpers.dart';
 import '../widgets/kyc_document_viewer_dialog.dart';
 import '../widgets/walker_activity_history_dialog.dart';
@@ -21,11 +22,13 @@ const Color walkerBlue = Color(0xFF1D4ED8);
 class WalkerDetailsScreen extends StatefulWidget {
   final String uid;
   final Map<String, dynamic> walkerData;
+  final Stream<WalkerAdminModel?>? walkerStream;
 
   const WalkerDetailsScreen({
     super.key,
     required this.uid,
     required this.walkerData,
+    this.walkerStream,
   });
 
   @override
@@ -34,9 +37,14 @@ class WalkerDetailsScreen extends StatefulWidget {
 }
 
 class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
-  final WalkerAdminService _service = WalkerAdminService();
+  late final WalkerAdminService _service = WalkerAdminService();
 
   bool _actionLoading = false;
+
+  // POL-004 is still draft and its verifier/approver separation is not yet
+  // represented by the current legacy service action. Keep lifecycle writes
+  // unavailable in this UI-validation branch until that contract is approved.
+  static const bool _lifecycleActionsEnabled = false;
 
   String _text(
     dynamic value, [
@@ -482,7 +490,7 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
       backgroundColor: walkerBackground,
       body: SafeArea(
         child: StreamBuilder<WalkerAdminModel?>(
-          stream: _service.watchWalker(widget.uid),
+          stream: widget.walkerStream ?? _service.watchWalker(widget.uid),
           builder: (context, snapshot) {
             if (snapshot.hasError) {
               return _errorView(
@@ -731,6 +739,7 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
           'Reject',
           Icons.close,
           () => _startReasonAction(action: 'reject'),
+          lifecycleAction: true,
         ),
       );
 
@@ -740,6 +749,7 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
             'Request Correction',
             Icons.edit_note_outlined,
             () => _startReasonAction(action: 'correction'),
+            lifecycleAction: true,
           ),
         );
       }
@@ -783,6 +793,33 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
           spacing: 10,
           runSpacing: 10,
           children: actions,
+        ),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF0E2),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFFFD2AC)),
+          ),
+          child: const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.lock_outline, color: walkerOrange, size: 18),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Lifecycle actions are disabled until POL-004 authority separation and required audit evidence are approved and tested.',
+                  style: TextStyle(
+                    color: walkerText,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         if (_actionLoading) ...[
           const SizedBox(height: 12),
@@ -1039,44 +1076,57 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
     IconData icon,
     VoidCallback onPressed,
   ) {
-    return FilledButton.icon(
-      style: FilledButton.styleFrom(
-        backgroundColor: walkerOrange,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 14,
+    return Tooltip(
+      message:
+          'Disabled until POL-004 lifecycle authority and audit requirements are approved and tested.',
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: walkerOrange,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(11),
+          ),
         ),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(11),
-        ),
+        onPressed: _actionLoading || !_lifecycleActionsEnabled
+            ? null
+            : onPressed,
+        icon: Icon(icon, size: 18),
+        label: Text(label),
       ),
-      onPressed: _actionLoading ? null : onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label),
     );
   }
 
   Widget _outlineAction(
     String label,
     IconData icon,
-    VoidCallback onPressed,
-  ) {
-    return OutlinedButton.icon(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: walkerOrange,
-        side: const BorderSide(color: walkerOrange),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 13,
+    VoidCallback onPressed, {
+    bool lifecycleAction = false,
+  }) {
+    final disabled = lifecycleAction && !_lifecycleActionsEnabled;
+    return Tooltip(
+      message: disabled
+          ? 'Disabled until POL-004 lifecycle authority and audit requirements are approved and tested.'
+          : '',
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: walkerOrange,
+          side: const BorderSide(color: walkerOrange),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 13,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(11),
+          ),
         ),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(11),
-        ),
+        onPressed: _actionLoading || disabled ? null : onPressed,
+        icon: Icon(icon, size: 17),
+        label: Text(label),
       ),
-      onPressed: _actionLoading ? null : onPressed,
-      icon: Icon(icon, size: 17),
-      label: Text(label),
     );
   }
 
@@ -1109,11 +1159,14 @@ class _WalkerDetailsScreenState extends State<WalkerDetailsScreen> {
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Walker details update live from Firestore. Admin actions '
-              'and audit entries are handled by WalkerAdminService. '
-              'Document replacement, editable profile fields and '
-              'suspected-flag management require separate implementation '
-              'and permissions.',
+              'Walker profile details still read from the existing Firestore source. '
+              'Lifecycle-changing actions (approval, rejection, suspension, '
+              'reactivation and correction requests) are disabled in this UI-validation '
+              'branch until POL-004 verifier/approver separation, allowed transitions '
+              'and complete audit evidence requirements are approved and tested. '
+              'The existing service is not being expanded. Document replacement, '
+              'editable profile fields and suspected-flag management require separate '
+              'implementation and permissions.',
               style: TextStyle(
                 color: walkerText,
                 fontSize: 12,

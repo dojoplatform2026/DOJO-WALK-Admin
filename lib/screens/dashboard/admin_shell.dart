@@ -3,19 +3,35 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 
 import 'dashboard_screen.dart';
+import 'dashboard_data_source.dart';
 import '../live/live_operations_screen.dart';
 import '../bookings/bookings_screen.dart';
-import '../coupons/coupons_screen.dart';
 
 import '../../features/walkers/screens/walker_management_dashboard_screen.dart';
 import '../../features/service_location/screens/service_location_screen.dart';
+import '../../features/customers/screens/customer_management_screen.dart';
+import '../../features/support/screens/support_center_screen.dart';
+import '../../features/pets/screens/pet_management_screen.dart';
+import '../../features/notifications/screens/notification_center_screen.dart';
+import '../../features/access_control/screens/admin_access_control_screen.dart';
+import '../../features/reports/screens/reports_analytics_screen.dart';
+import '../../features/finance/screens/finance_operations_screen.dart';
+import '../../features/audit/screens/admin_audit_logs_screen.dart';
+import '../../features/settings/screens/settings_governance_screen.dart';
 
 const Color adminOrange = Color(0xFFFF7900);
 const Color adminBackground = Color(0xFFFFFAF5);
 const Color adminText = Color(0xFF252525);
 
 class AdminShell extends StatefulWidget {
-  const AdminShell({super.key});
+  final DashboardDataSource? dashboardDataSource;
+  final Widget Function(int index)? contentBuilder;
+
+  const AdminShell({
+    super.key,
+    this.dashboardDataSource,
+    this.contentBuilder,
+  });
 
   @override
   State<AdminShell> createState() => _AdminShellState();
@@ -52,11 +68,6 @@ class _AdminShellState extends State<AdminShell> {
       icon: Icons.pets_rounded,
     ),
     _AdminMenuItem(
-      title: 'Coupons',
-      subtitle: 'Offers and discounts',
-      icon: Icons.local_offer_rounded,
-    ),
-    _AdminMenuItem(
       title: 'Notifications',
       subtitle: 'System notifications',
       icon: Icons.notifications_active_rounded,
@@ -67,21 +78,45 @@ class _AdminShellState extends State<AdminShell> {
       icon: Icons.support_agent_rounded,
     ),
     _AdminMenuItem(
+      title: 'Admin Users & Roles',
+      subtitle: 'Access scope, role matrix and security',
+      icon: Icons.admin_panel_settings_outlined,
+    ),
+    _AdminMenuItem(
+      title: 'Audit Logs',
+      subtitle: 'Security and activity trail',
+      icon: Icons.history_rounded,
+    ),
+    _AdminMenuItem(
+      title: 'Reports & Analytics',
+      subtitle: 'Policy-mapped operational reporting',
+      icon: Icons.analytics_outlined,
+    ),
+    _AdminMenuItem(
+      title: 'Finance Operations',
+      subtitle: 'Payments, refunds, payouts and reconciliation',
+      icon: Icons.account_balance_wallet_outlined,
+    ),
+    _AdminMenuItem(
       title: 'Settings',
       subtitle: 'Admin preferences',
       icon: Icons.settings_rounded,
     ),
     _AdminMenuItem(
       title: 'Service Locations',
-      subtitle: 'Manage countries, states, cities and areas',
+      subtitle: 'State/UT, district, city and zone management',
       icon: Icons.location_city_rounded,
     ),
   ];
 
   Widget _buildContent() {
+    final contentBuilder = widget.contentBuilder;
+    if (contentBuilder != null) return contentBuilder(_selectedIndex);
+
     switch (_selectedIndex) {
       case 0:
         return DashboardScreen(
+          dataSource: widget.dashboardDataSource,
           onOpenLiveOperations: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -90,7 +125,7 @@ class _AdminShellState extends State<AdminShell> {
             );
           },
           onOpenServiceLocations: () {
-            setState(() => _selectedIndex = 9);
+            setState(() => _selectedIndex = 12);
           },
         );
 
@@ -100,10 +135,34 @@ class _AdminShellState extends State<AdminShell> {
       case 2:
         return const WalkerManagementDashboardScreen();
 
+      case 3:
+        return const CustomerManagementScreen();
+
+      case 4:
+        return const PetManagementScreen();
+
       case 5:
-        return const CouponsScreen();
+        return const NotificationCenterScreen();
+
+      case 6:
+        return const SupportCenterScreen();
+
+      case 7:
+        return const AdminAccessControlScreen();
+
+      case 8:
+        return const AdminAuditLogsScreen();
 
       case 9:
+        return const ReportsAnalyticsScreen();
+
+      case 10:
+        return const FinanceOperationsScreen();
+
+      case 11:
+        return const SettingsGovernanceScreen();
+
+      case 12:
         return const ServiceLocationScreen();
 
       default:

@@ -2,69 +2,60 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-class DashboardScreen extends StatelessWidget {
+import '../../utils/admin_error_classifier.dart';
+import 'dashboard_data_source.dart';
+
+String dashboardGreetingFor(DateTime now) {
+  final hour = now.hour;
+  if (hour < 12) return 'Good morning, Admin 👋';
+  if (hour < 17) return 'Good afternoon, Admin 👋';
+  return 'Good evening, Admin 👋';
+}
+
+class DashboardScreen extends StatefulWidget {
   final VoidCallback? onOpenLiveOperations;
   final VoidCallback? onOpenServiceLocations;
+  final DashboardDataSource? dataSource;
+  final DateTime Function()? clock;
 
   const DashboardScreen({
     super.key,
     this.onOpenLiveOperations,
     this.onOpenServiceLocations,
+    this.dataSource,
+    this.clock,
   });
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  int _refreshVersion = 0;
+
+  DashboardDataSource get _data =>
+      widget.dataSource ?? FirestoreDashboardDataSource(FirebaseFirestore.instance);
+
+  DateTime get _now => widget.clock?.call() ?? DateTime.now();
 
   final Color orange = const Color(0xFFFF7900);
 
-  // ============================================================
-  // FIRESTORE COUNTS
-  // ============================================================
-
-  Stream<int> _countAll(String collection) {
-    return FirebaseFirestore.instance
-        .collection(collection)
-        .snapshots()
-        .map((snapshot) => snapshot.size);
-  }
-
-  Stream<int> _countWhere(
-    String collection,
-    String field,
-    dynamic value,
-  ) {
-    return FirebaseFirestore.instance
-        .collection(collection)
-        .where(field, isEqualTo: value)
-        .snapshots()
-        .map((snapshot) => snapshot.size);
-  }
-
-  // ============================================================
-  // REVENUE
-  // ============================================================
-
-  Stream<double> _totalRevenue() {
-    return FirebaseFirestore.instance
-        .collection('payments')
-        .where('status', isEqualTo: 'paid')
-        .snapshots()
-        .map((snapshot) {
-      double total = 0;
-
-      for (final doc in snapshot.docs) {
-        final data = doc.data();
-
-        final amount = data['amount'];
-
-        if (amount is num) {
-          total += amount.toDouble();
-        }
-      }
-
-      return total;
+  void _refreshDashboard() {
+    setState(() {
+      _refreshVersion++;
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    // The key forces all dashboard StreamBuilders to resubscribe to fresh streams.
+    return KeyedSubtree(
+      key: ValueKey(_refreshVersion),
+      child: _buildDashboardContent(context),
+    );
+  }
+
+  Widget _buildDashboardContent(BuildContext context) {
     return Container(
       color: const Color(0xFFFFFAF5),
       child: SingleChildScrollView(
@@ -106,7 +97,7 @@ class DashboardScreen extends StatelessWidget {
                       child: _StatCard(
                         title: 'Total Bookings',
                         icon: Icons.calendar_month_outlined,
-                        stream: _countAll('bookings'),
+                        stream: _data.countAll('bookings'),
                       ),
                     ),
                     SizedBox(
@@ -114,7 +105,7 @@ class DashboardScreen extends StatelessWidget {
                       child: _StatCard(
                         title: 'Customers',
                         icon: Icons.people_outline,
-                        stream: _countAll('users'),
+                        stream: _data.countAll('users'),
                       ),
                     ),
                     SizedBox(
@@ -122,13 +113,13 @@ class DashboardScreen extends StatelessWidget {
                       child: _StatCard(
                         title: 'Walkers',
                         icon: Icons.directions_walk_outlined,
-                        stream: _countAll('walkers'),
+                        stream: _data.countAll('walkers'),
                       ),
                     ),
                     SizedBox(
                       width: cardWidth,
                       child: _RevenueCard(
-                        stream: _totalRevenue(),
+                        stream: _data.totalPaidAmount(),
                       ),
                     ),
                   ],
@@ -221,7 +212,7 @@ class DashboardScreen extends StatelessWidget {
   Widget _buildHeader() {
     final date = DateFormat(
       'EEEE, dd MMMM yyyy',
-    ).format(DateTime.now());
+    ).format(_now);
 
     return Container(
       width: double.infinity,
@@ -249,61 +240,118 @@ class DashboardScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                height: 48,
-                width: 48,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFFFF9A3D), Color(0xFFFF7900)],
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 520;
+
+              final brand = Row(
+                children: [
+                  Container(
+                    height: 48,
+                    width: 48,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF9A3D), Color(0xFFFF7900)],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFFF7900).withValues(alpha: 0.25),
+                          blurRadius: 12,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.dashboard_customize_rounded,
+                      color: Colors.white,
+                      size: 27,
+                    ),
                   ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFFFF7900).withValues(alpha: 0.25),
-                      blurRadius: 12,
-                      offset: const Offset(0, 5),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      'DOJO WALK Command Center',
+                      maxLines: compact ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Color(0xFF292524),
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              );
+
+              final actions = Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Company overview',
+                    style: TextStyle(
+                      color: Color(0xFF78716C),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: const ValueKey('dashboard-refresh'),
+                    tooltip: 'Refresh dashboard data',
+                    onPressed: _refreshDashboard,
+                    icon: const Icon(Icons.refresh_rounded),
+                    color: const Color(0xFFFF7900),
+                  ),
+                ],
+              );
+
+              if (compact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    brand,
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text(
+                            'Company overview',
+                            style: TextStyle(
+                              color: Color(0xFF78716C),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          IconButton(
+                            key: const ValueKey('dashboard-refresh'),
+                            tooltip: 'Refresh dashboard data',
+                            onPressed: _refreshDashboard,
+                            icon: const Icon(Icons.refresh_rounded),
+                            color: const Color(0xFFFF7900),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
-                ),
-                child: const Icon(
-                  Icons.dashboard_customize_rounded,
-                  color: Colors.white,
-                  size: 27,
-                ),
-              ),
-              const SizedBox(width: 14),
-              const Expanded(
-                child: Text(
-                  'DOJO WALK Command Center',
-                  style: TextStyle(
-                    color: Color(0xFF292524),
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              const Icon(
-                Icons.circle,
-                size: 9,
-                color: Color(0xFF16A34A),
-              ),
-              const SizedBox(width: 6),
-              const Text(
-                'Overview',
-                style: TextStyle(
-                  color: Color(0xFF15803D),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Expanded(child: brand),
+                  const SizedBox(width: 12),
+                  actions,
+                ],
+              );
+            },
           ),
           const SizedBox(height: 18),
-          const Text(
-            'Good morning, Admin 👋',
-            style: TextStyle(
+          Text(
+            dashboardGreetingFor(_now),
+            style: const TextStyle(
               color: Color(0xFF292524),
               fontSize: 27,
               fontWeight: FontWeight.w900,
@@ -333,7 +381,7 @@ class DashboardScreen extends StatelessWidget {
             runSpacing: 10,
             children: [
               FilledButton.icon(
-                onPressed: onOpenLiveOperations,
+                onPressed: widget.onOpenLiveOperations,
                 style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFFFF7900),
                   foregroundColor: Colors.white,
@@ -354,7 +402,7 @@ class DashboardScreen extends StatelessWidget {
                 ),
               ),
               OutlinedButton.icon(
-                onPressed: onOpenServiceLocations,
+                onPressed: widget.onOpenServiceLocations,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: const Color(0xFFFF7900),
                   side: const BorderSide(color: Color(0xFFFF7900)),
@@ -384,44 +432,28 @@ class DashboardScreen extends StatelessWidget {
           _LiveStreamRow(
             label: 'Active Walks',
             icon: Icons.directions_walk,
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'walking',
-            ),
+            stream: _data.countBookingStatus('Walk In Progress'),
           ),
           const Divider(),
 
           _LiveStreamRow(
-            label: 'Available Walkers',
+            label: 'Online Walkers',
             icon: Icons.person_outline,
-            stream: _countWhere(
-              'walkers',
-              'isOnline',
-              true,
-            ),
+            stream: _data.countWhere('walkers', 'isOnline', true),
           ),
           const Divider(),
 
           _LiveStreamRow(
             label: 'Waiting Assignment',
             icon: Icons.hourglass_empty,
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'pending',
-            ),
+            stream: _data.countBookingStatus('Pending'),
           ),
           const Divider(),
 
           _LiveStreamRow(
             label: 'Completed Walks',
             icon: Icons.check_circle_outline,
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'completed',
-            ),
+            stream: _data.countBookingStatus('Completed'),
           ),
         ],
       ),
@@ -440,51 +472,31 @@ class DashboardScreen extends StatelessWidget {
         children: [
           _StatusStreamRow(
             label: 'Pending',
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'Pending',
-            ),
+            stream: _data.countBookingStatus('Pending'),
           ),
           const SizedBox(height: 12),
 
           _StatusStreamRow(
             label: 'Picked Up',
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'picked_up',
-            ),
+            stream: _data.countBookingStatus('Picked Up'),
           ),
           const SizedBox(height: 12),
 
           _StatusStreamRow(
             label: 'Accepted',
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'accepted',
-            ),
+            stream: _data.countBookingStatus('Walker Accepted'),
           ),
           const SizedBox(height: 12),
 
           _StatusStreamRow(
             label: 'In Progress',
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'walking',
-            ),
+            stream: _data.countBookingStatus('Walk In Progress'),
           ),
           const SizedBox(height: 12),
 
           _StatusStreamRow(
             label: 'Completed',
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'Completed',
-            ),
+            stream: _data.countBookingStatus('Completed'),
           ),
         ],
       ),
@@ -499,16 +511,8 @@ class DashboardScreen extends StatelessWidget {
     return _DashboardCard(
       title: 'Recent Bookings',
       icon: Icons.receipt_long_outlined,
-      child: StreamBuilder<
-          QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('bookings')
-            .orderBy(
-              'createdAt',
-              descending: true,
-            )
-            .limit(8)
-            .snapshots(),
+      child: StreamBuilder<List<DashboardBooking>>(
+        stream: _data.recentBookings(),
         builder: (context, snapshot) {
           if (snapshot.connectionState ==
               ConnectionState.waiting) {
@@ -523,10 +527,11 @@ class DashboardScreen extends StatelessWidget {
           if (snapshot.hasError) {
             return _errorMessage(
               'Unable to load recent bookings.',
+              error: snapshot.error,
             );
           }
 
-          final docs = snapshot.data?.docs ?? [];
+          final docs = snapshot.data ?? [];
 
           if (docs.isEmpty) {
             return _emptyMessage(
@@ -536,15 +541,9 @@ class DashboardScreen extends StatelessWidget {
           }
 
           return Column(
-            children: docs.map((doc) {
-              final data = doc.data();
-
-              final status =
-                  data['status']?.toString() ??
-                      'Pending';
-
-              final petId =
-                  data['petId']?.toString() ?? '';
+            children: docs.map((booking) {
+              final status = booking.status;
+              final petId = booking.petId;
 
               return Padding(
                 padding:
@@ -570,7 +569,7 @@ class DashboardScreen extends StatelessWidget {
                   ),
 
                   title: Text(
-                    'Booking #${doc.id}',
+                    'Booking #${booking.id}',
                     maxLines: 1,
                     overflow:
                         TextOverflow.ellipsis,
@@ -617,11 +616,7 @@ class DashboardScreen extends StatelessWidget {
             subtitle:
                 'Bookings waiting for a walker',
             icon: Icons.person_search_outlined,
-            stream: _countWhere(
-              'bookings',
-              'status',
-              'Pending',
-            ),
+            stream: _data.countBookingStatus('Pending'),
           ),
           const Divider(),
 
@@ -630,24 +625,16 @@ class DashboardScreen extends StatelessWidget {
             subtitle:
                 'Payments requiring attention',
             icon: Icons.payment_outlined,
-            stream: _countWhere(
-              'payments',
-              'status',
-              'failed',
-            ),
+            stream: _data.countWhere('payments', 'status', 'failed'),
           ),
           const Divider(),
 
           _AlertStreamRow(
-            title: 'Inactive walkers',
+            title: 'Offline walkers',
             subtitle:
                 'Walkers currently offline',
             icon: Icons.person_off_outlined,
-            stream: _countWhere(
-              'walkers',
-              'isOnline',
-              false,
-            ),
+            stream: _data.countWhere('walkers', 'isOnline', false),
           ),
         ],
       ),
@@ -662,16 +649,8 @@ class DashboardScreen extends StatelessWidget {
     return _DashboardCard(
       title: 'System Activity',
       icon: Icons.bolt_outlined,
-      child: StreamBuilder<
-          QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('audit_logs')
-            .orderBy(
-              'timestamp',
-              descending: true,
-            )
-            .limit(6)
-            .snapshots(),
+      child: StreamBuilder<List<DashboardActivity>>(
+        stream: _data.recentActivity(),
         builder: (context, snapshot) {
           if (snapshot.connectionState ==
               ConnectionState.waiting) {
@@ -686,44 +665,23 @@ class DashboardScreen extends StatelessWidget {
           if (snapshot.hasError) {
             return _errorMessage(
               'Unable to load activity.',
+              error: snapshot.error,
             );
           }
 
-          final docs = snapshot.data?.docs ?? [];
+          final docs = snapshot.data ?? [];
 
           if (docs.isEmpty) {
-            return Column(
-              children: const [
-                _ActivityItem(
-                  title: 'Dashboard connected',
-                  subtitle:
-                      'Firebase realtime connection ready',
-                  icon:
-                      Icons.cloud_done_outlined,
-                ),
-                Divider(),
-                _ActivityItem(
-                  title: 'Admin security active',
-                  subtitle:
-                      'Role verification enabled',
-                  icon:
-                      Icons.security_outlined,
-                ),
-              ],
+            return _emptyMessage(
+              'No audit activity available yet.',
+              Icons.history_toggle_off_outlined,
             );
           }
 
           return Column(
-            children: docs.map((doc) {
-              final data = doc.data();
-
-              final action =
-                  data['action']?.toString() ??
-                      'System activity';
-
-              final actor =
-                  data['actorRole']?.toString() ??
-                      'Admin';
+            children: docs.map((activity) {
+              final action = activity.action;
+              final actor = activity.actorRole;
 
               return Padding(
                 padding:
@@ -748,14 +706,30 @@ class DashboardScreen extends StatelessWidget {
   // HELPERS
   // ============================================================
 
-  Widget _errorMessage(String message) {
+  Widget _errorMessage(String message, {Object? error}) {
+    final permissionDenied = isPermissionDeniedError(error);
     return Padding(
       padding: const EdgeInsets.all(16),
-      child: Text(
-        message,
-        style: TextStyle(
-          color: Colors.grey.shade600,
-        ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            permissionDenied ? Icons.lock_outline : Icons.error_outline,
+            color: permissionDenied ? Colors.orange.shade800 : Colors.redAccent,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              permissionDenied
+                  ? 'Permission denied. Your Admin role or assigned scope may not allow access to this data.'
+                  : message,
+              style: TextStyle(
+                color: Colors.grey.shade700,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -778,6 +752,52 @@ class DashboardScreen extends StatelessWidget {
             message,
             style: TextStyle(
               color: Colors.grey.shade600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ================================================================
+// SHARED STREAM ERROR STATE
+// ================================================================
+
+class _DashboardStreamError extends StatelessWidget {
+  final Object? error;
+  final bool compact;
+
+  const _DashboardStreamError({
+    required this.error,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final denied = isPermissionDeniedError(error);
+    final label = denied ? 'Access denied' : 'Unable to load';
+    final color = denied ? Colors.orange.shade800 : Colors.redAccent;
+
+    return Semantics(
+      label: denied
+          ? 'Access denied. Check Admin role and assigned data scope.'
+          : 'Unable to load dashboard data. Refresh and try again.',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            denied ? Icons.lock_outline : Icons.error_outline,
+            color: color,
+            size: compact ? 16 : 18,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: compact ? 10 : 12,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -866,7 +886,9 @@ class _StatCard extends StatelessWidget {
                   stream: stream,
                   builder:
                       (context, snapshot) {
-                    if (snapshot.hasError) return const Tooltip(message: 'Unable to load this count', child: Icon(Icons.error_outline, color: Colors.redAccent));
+                    if (snapshot.hasError) {
+                      return _DashboardStreamError(error: snapshot.error, compact: true);
+                    }
                     if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) return const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2));
                     return Text('${snapshot.data ?? 0}', style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800));
                   },
@@ -944,11 +966,18 @@ class _RevenueCard extends StatelessWidget {
                   CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Total Revenue',
+                  'Paid Payments (All Time)',
                   style: TextStyle(
-                    color:
-                        Colors.grey.shade600,
+                    color: Colors.grey.shade600,
                     fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                const Text(
+                  'Gross paid amount; refunds and fees not deducted',
+                  style: TextStyle(
+                    color: Color(0xFF78716C),
+                    fontSize: 10,
                   ),
                 ),
                 const SizedBox(height: 5),
@@ -956,7 +985,9 @@ class _RevenueCard extends StatelessWidget {
                   stream: stream,
                   builder:
                       (context, snapshot) {
-                    if (snapshot.hasError) return const Tooltip(message: 'Unable to load revenue', child: Icon(Icons.error_outline, color: Colors.redAccent));
+                    if (snapshot.hasError) {
+                      return _DashboardStreamError(error: snapshot.error, compact: true);
+                    }
                     if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) return const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2));
                     final value = snapshot.data ?? 0;
                     return Text('₹${value.toStringAsFixed(0)}', style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800));
@@ -1028,12 +1059,15 @@ class _DashboardCard extends StatelessWidget {
                 color: orange,
               ),
               const SizedBox(width: 10),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight:
-                      FontWeight.w700,
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
@@ -1078,7 +1112,7 @@ class _LiveStreamRow extends StatelessWidget {
           stream: stream,
           builder:
               (context, snapshot) {
-            if (snapshot.hasError) return const Tooltip(message: 'Unable to load this count', child: Icon(Icons.error_outline, color: Colors.redAccent, size: 18));
+            if (snapshot.hasError) return _DashboardStreamError(error: snapshot.error, compact: true);
             if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) return const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2));
             return Text('${snapshot.data ?? 0}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16));
           },
@@ -1135,7 +1169,7 @@ class _StatusStreamRow extends StatelessWidget {
                 ),
               ),
               child: snapshot.hasError
-                  ? const Tooltip(message: 'Unable to load this count', child: Icon(Icons.error_outline, color: Colors.redAccent, size: 16))
+                  ? _DashboardStreamError(error: snapshot.error, compact: true)
                   : snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData
                       ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                       : Text('${snapshot.data ?? 0}', style: const TextStyle(color: Color(0xFFFF7900), fontWeight: FontWeight.w700, fontSize: 12)),
@@ -1211,15 +1245,21 @@ class _AlertStreamRow extends StatelessWidget {
         ),
         StreamBuilder<int>(
           stream: stream,
-          builder:
-              (context, snapshot) {
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _DashboardStreamError(error: snapshot.error, compact: true);
+            }
+            if (snapshot.connectionState == ConnectionState.waiting &&
+                !snapshot.hasData) {
+              return const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              );
+            }
             return Text(
               '${snapshot.data ?? 0}',
-              style:
-                  const TextStyle(
-                fontWeight:
-                    FontWeight.w800,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w800),
             );
           },
         ),

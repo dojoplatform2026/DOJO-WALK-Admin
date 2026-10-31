@@ -10,16 +10,18 @@ import 'service_location_index_contract.dart';
 /// DOJO WALK ADMIN
 /// Service Location Service
 ///
-/// Hierarchy:
-/// Country -> State -> District -> Service City -> Service Area
-/// -> optional Locality/Village. Legacy Cities may omit districtId.
+/// Legacy Service Location compatibility service.
 ///
-/// City and Area activation requires a verified polygon stored
-/// in service_location_boundaries.
+/// Approved service hierarchy for the new workflow:
+/// State/UT -> District -> City -> Zone. Only Zone may be activated
+/// or deactivated for customer service. Locality is not a service-status
+/// unit. Legacy collections/models remain read-only compatibility until a
+/// separately reviewed migration removes them.
 ///
-/// Locality activation does not require its own polygon.
-///
-/// Unique names are enforced by the trusted server callable.
+/// Do not use legacy City/Area/Locality or generic hierarchy status callables
+/// to change service availability. Zone activation requires the dedicated
+/// Founder-approved Zone workflow; Zone deactivation requires the approved
+/// deactivation workflow and server-side audit.
 /// ===========================================================
 
 class ServiceLocationService {
@@ -41,11 +43,27 @@ class ServiceLocationService {
     required String locationId,
     required bool isActive,
   }) async {
+    // Fail closed in the Admin client as well as on the trusted server.
+    // Reference hierarchy and legacy Area/Locality records must never carry
+    // service activation state. A Zone may only be deactivated through this
+    // generic endpoint after the Founder-approved deactivation workflow.
+    if (locationType != 'zone') {
+      throw StateError(
+        'Only Zone can have service status. '
+        'State/UT, District, City and legacy Area/Locality are reference records.',
+      );
+    }
+    if (isActive) {
+      throw StateError(
+        'Zone activation must use the Founder-approved Zone workflow.',
+      );
+    }
+
     final callable = _functions.httpsCallable('setServiceLocationStatus');
     await callable.call<void>({
       'locationType': locationType,
       'locationId': locationId,
-      'isActive': isActive,
+      'isActive': false,
     });
   }
 
@@ -53,11 +71,12 @@ class ServiceLocationService {
     required String locationType,
     required String locationId,
   }) async {
-    final callable = _functions.httpsCallable('activateServiceLocation');
-    await callable.call<void>({
-      'locationType': locationType,
-      'locationId': locationId,
-    });
+    // The legacy callable only targets City/Area and is intentionally retired
+    // by the Zone-only contract. Do not send obsolete activation requests.
+    throw StateError(
+      'Legacy $locationType activation is disabled. '
+      'Use the Founder-approved Zone workflow.',
+    );
   }
 
   // ==========================================================
